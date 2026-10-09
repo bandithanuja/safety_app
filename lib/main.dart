@@ -1,7 +1,10 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
+import 'package:geolocator/geolocator.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 void main() => runApp(const SafetyApp());
 
@@ -38,6 +41,39 @@ class ContactStorage {
 }
 
 // ---------------------------------------------------------------
+// LOCATION: ask permission and get the current position
+// ---------------------------------------------------------------
+class LocationService {
+  static Future<Position> getCurrentLocation() async {
+    final serviceEnabled = await Geolocator.isLocationServiceEnabled();
+    if (!serviceEnabled) {
+      throw 'Location services are turned off.';
+    }
+
+    var permission = await Geolocator.checkPermission();
+    if (permission == LocationPermission.denied) {
+      permission = await Geolocator.requestPermission();
+    }
+    if (permission == LocationPermission.denied) {
+      throw 'Location permission was denied.';
+    }
+    if (permission == LocationPermission.deniedForever) {
+      throw 'Location permission is blocked. Please enable it in settings.';
+    }
+
+    return Geolocator.getCurrentPosition(
+      locationSettings: const LocationSettings(
+        accuracy: LocationAccuracy.high,
+        timeLimit: Duration(seconds: 15),
+      ),
+    );
+  }
+
+  static String mapsLink(Position p) =>
+      'https://www.google.com/maps?q=${p.latitude},${p.longitude}';
+}
+
+// ---------------------------------------------------------------
 // APP
 // ---------------------------------------------------------------
 class SafetyApp extends StatelessWidget {
@@ -63,9 +99,28 @@ class SafetyApp extends StatelessWidget {
 class HomeScreen extends StatelessWidget {
   const HomeScreen({super.key});
 
-  void _soon(BuildContext context, String message) {
+  void _showMessage(BuildContext context, String message) {
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(content: Text(message)),
+    );
+  }
+
+  Future<void> _startSos(BuildContext context) async {
+    final contacts = await ContactStorage.load();
+    if (!context.mounted) return;
+
+    if (contacts.isEmpty) {
+      _showMessage(context, 'Add at least one trusted contact first');
+      Navigator.push(
+        context,
+        MaterialPageRoute(builder: (_) => const ContactsScreen()),
+      );
+      return;
+    }
+
+    Navigator.push(
+      context,
+      MaterialPageRoute(builder: (_) => SosScreen(contacts: contacts)),
     );
   }
 
@@ -95,7 +150,7 @@ class HomeScreen extends StatelessWidget {
             ),
             const SizedBox(height: 32),
             GestureDetector(
-              onTap: () => _soon(context, 'SOS will send alerts on Day 3-4'),
+              onTap: () => _startSos(context),
               child: Container(
                 width: 220,
                 height: 220,
@@ -123,13 +178,15 @@ class HomeScreen extends StatelessWidget {
             ),
             const SizedBox(height: 48),
             ElevatedButton.icon(
-              onPressed: () => _soon(context, 'Emergency call comes on Day 4'),
+              onPressed: () =>
+                  _showMessage(context, 'Emergency call comes on Day 4'),
               icon: const Icon(Icons.call),
               label: const Text('Call Emergency'),
             ),
             const SizedBox(height: 12),
             OutlinedButton.icon(
-              onPressed: () => _soon(context, 'Fake call comes on Day 5'),
+              onPressed: () =>
+                  _showMessage(context, 'Fake call comes on Day 5'),
               icon: const Icon(Icons.phone_in_talk),
               label: const Text('Fake Call'),
             ),
@@ -137,6 +194,195 @@ class HomeScreen extends StatelessWidget {
         ),
       ),
     );
+  }
+}
+
+// ---------------------------------------------------------------
+// SOS SCREEN: 5-second countdown -> get location -> build message
+// ---------------------------------------------------------------
+enum SosStage { countdown, locating, ready, error }
+
+class SosScreen extends StatefulWidget {
+  final List<Contact> contacts;
+  const SosScreen({super.key, required this.contacts});
+
+  @override
+  State<SosScreen> createState() => _SosScreenState();
+}
+
+class _SosScreenState extends State<SosScreen> {
+  int _secondsLeft = 5;
+  Timer? _timer;
+  SosStage _stage = SosStage.countdown;
+  String _message = '';
+  String _link = '';
+  String _error = '';
+
+  @override
+  void initState() {
+    super.initState();
+    _startCountdown();
+  }
+
+  @override
+  void dispose() {
+    _timer?.cancel();
+    super.dispose();
+  }
+
+  void _startCountdown() {
+    _timer = Timer.periodic(const Duration(seconds: 1), (t) {
+      if (_secondsLeft <= 1) {
+        t.cancel();
+        _prepareAlert();
+      } else {
+        setState(() => _secondsLeft--);
+      }
+    });
+  }
+
+  Future<void> _prepareAlert() async {
+    setState(() => _stage = SosStage.locating);
+    try {
+      final position = await LocationService.getCurrentLocation();
+      if (!mounted) return;
+      final link = LocationService.mapsLink(position);
+      setState(() {
+        _link = link;
+        _message = 'EMERGENCY! I need help. My current location: $link';
+        _stage = SosStage.ready;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _error = e.toString();
+        _stage = SosStage.error;
+      });
+    }
+  }
+
+  Future<void> _openMap() async {
+    await launchUrl(Uri.parse(_link), mode: LaunchMode.externalApplication);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('SOS Alert')),
+      body: Padding(
+        padding: const EdgeInsets.all(24),
+        child: Center(child: _buildBody()),
+      ),
+    );
+  }
+
+  Widget _buildBody() {
+    switch (_stage) {
+      case SosStage.countdown:
+        return Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            const Text('Sending alert in', style: TextStyle(fontSize: 22)),
+            const SizedBox(height: 16),
+            Text(
+              '$_secondsLeft',
+              style: const TextStyle(
+                fontSize: 96,
+                fontWeight: FontWeight.bold,
+                color: Colors.red,
+              ),
+            ),
+            const SizedBox(height: 32),
+            SizedBox(
+              width: 220,
+              height: 56,
+              child: OutlinedButton(
+                onPressed: () => Navigator.pop(context),
+                child: const Text('CANCEL', style: TextStyle(fontSize: 20)),
+              ),
+            ),
+          ],
+        );
+
+      case SosStage.locating:
+        return const Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            CircularProgressIndicator(),
+            SizedBox(height: 24),
+            Text('Getting your location...', style: TextStyle(fontSize: 18)),
+          ],
+        );
+
+      case SosStage.ready:
+        return SingleChildScrollView(
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              const Icon(Icons.check_circle, color: Colors.green, size: 72),
+              const SizedBox(height: 12),
+              const Text(
+                'Alert ready',
+                style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold),
+              ),
+              const SizedBox(height: 16),
+              Card(
+                child: Padding(
+                  padding: const EdgeInsets.all(16),
+                  child: SelectableText(_message),
+                ),
+              ),
+              const SizedBox(height: 16),
+              const Text(
+                'Will be sent to:',
+                style: TextStyle(fontWeight: FontWeight.w600),
+              ),
+              ...widget.contacts.map(
+                (c) => ListTile(
+                  dense: true,
+                  leading: const Icon(Icons.person),
+                  title: Text(c.name),
+                  subtitle: Text(c.phone),
+                ),
+              ),
+              const SizedBox(height: 8),
+              const Text(
+                'Real SMS sending is added on Day 4.',
+                style: TextStyle(fontStyle: FontStyle.italic),
+              ),
+              const SizedBox(height: 16),
+              ElevatedButton.icon(
+                onPressed: _openMap,
+                icon: const Icon(Icons.map),
+                label: const Text('Open location in Maps'),
+              ),
+              TextButton(
+                onPressed: () => Navigator.pop(context),
+                child: const Text('Done'),
+              ),
+            ],
+          ),
+        );
+
+      case SosStage.error:
+        return Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            const Icon(Icons.error_outline, color: Colors.red, size: 72),
+            const SizedBox(height: 12),
+            Text(_error, textAlign: TextAlign.center),
+            const SizedBox(height: 24),
+            ElevatedButton(
+              onPressed: _prepareAlert,
+              child: const Text('Try again'),
+            ),
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Back'),
+            ),
+          ],
+        );
+    }
   }
 }
 
