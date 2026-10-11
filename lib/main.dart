@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -115,7 +116,7 @@ class SafetyApp extends StatelessWidget {
 }
 
 // ---------------------------------------------------------------
-// HOME SCREEN: big SOS button + emergency call + fake call
+// HOME SCREEN: SOS button + emergency call + fake call
 // ---------------------------------------------------------------
 class HomeScreen extends StatelessWidget {
   const HomeScreen({super.key});
@@ -172,6 +173,77 @@ class HomeScreen extends StatelessWidget {
     }
   }
 
+  Future<void> _startFakeCall(BuildContext context) async {
+    final prefs = await SharedPreferences.getInstance();
+    if (!context.mounted) return;
+
+    final nameController = TextEditingController(
+      text: prefs.getString('fake_caller') ?? 'Mom',
+    );
+    int delay = 0;
+
+    final start = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setLocal) => AlertDialog(
+          title: const Text('Fake call'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              TextField(
+                controller: nameController,
+                decoration: const InputDecoration(labelText: 'Caller name'),
+              ),
+              const SizedBox(height: 16),
+              const Text('Ring after'),
+              const SizedBox(height: 8),
+              SegmentedButton<int>(
+                segments: const [
+                  ButtonSegment(value: 0, label: Text('Now')),
+                  ButtonSegment(value: 10, label: Text('10 s')),
+                  ButtonSegment(value: 30, label: Text('30 s')),
+                ],
+                selected: {delay},
+                onSelectionChanged: (s) => setLocal(() => delay = s.first),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('Cancel'),
+            ),
+            ElevatedButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              child: const Text('Start'),
+            ),
+          ],
+        ),
+      ),
+    );
+
+    if (start != true || !context.mounted) return;
+
+    final typed = nameController.text.trim();
+    final name = typed.isEmpty ? 'Mom' : typed;
+    await prefs.setString('fake_caller', name);
+    if (!context.mounted) return;
+
+    final navigator = Navigator.of(context);
+    if (delay > 0) {
+      _showMessage(context, 'Fake call will ring in $delay seconds');
+      await Future.delayed(Duration(seconds: delay));
+    }
+
+    navigator.push(
+      MaterialPageRoute(
+        fullscreenDialog: true,
+        builder: (_) => FakeCallScreen(callerName: name),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -189,53 +261,216 @@ class HomeScreen extends StatelessWidget {
         ],
       ),
       body: Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            const Text(
-              'In danger? Press SOS',
-              style: TextStyle(fontSize: 20, fontWeight: FontWeight.w500),
-            ),
-            const SizedBox(height: 32),
-            GestureDetector(
-              onTap: () => _startSos(context),
-              child: Container(
-                width: 220,
-                height: 220,
-                alignment: Alignment.center,
-                decoration: BoxDecoration(
-                  color: Colors.red,
-                  shape: BoxShape.circle,
-                  boxShadow: [
-                    BoxShadow(
-                      color: Colors.red.shade200,
-                      blurRadius: 30,
-                      spreadRadius: 8,
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              const Text(
+                'In danger? Press SOS',
+                style: TextStyle(fontSize: 20, fontWeight: FontWeight.w500),
+              ),
+              const SizedBox(height: 28),
+              GestureDetector(
+                onTap: () => _startSos(context),
+                child: Container(
+                  width: 220,
+                  height: 220,
+                  alignment: Alignment.center,
+                  decoration: BoxDecoration(
+                    color: Colors.red,
+                    shape: BoxShape.circle,
+                    boxShadow: [
+                      BoxShadow(
+                        color: Colors.red.shade200,
+                        blurRadius: 30,
+                        spreadRadius: 8,
+                      ),
+                    ],
+                  ),
+                  child: const Text(
+                    'SOS',
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 56,
+                      fontWeight: FontWeight.bold,
                     ),
-                  ],
-                ),
-                child: const Text(
-                  'SOS',
-                  style: TextStyle(
-                    color: Colors.white,
-                    fontSize: 56,
-                    fontWeight: FontWeight.bold,
                   ),
                 ),
               ),
-            ),
-            const SizedBox(height: 48),
-            ElevatedButton.icon(
-              onPressed: () => _callEmergency(context),
-              icon: const Icon(Icons.call),
-              label: const Text('Call Emergency'),
+              const SizedBox(height: 40),
+              SizedBox(
+                width: 240,
+                height: 52,
+                child: FilledButton.icon(
+                  onPressed: () => _callEmergency(context),
+                  icon: const Icon(Icons.call),
+                  label: const Text('Call Emergency'),
+                ),
+              ),
+              const SizedBox(height: 12),
+              SizedBox(
+                width: 240,
+                height: 52,
+                child: OutlinedButton.icon(
+                  onPressed: () => _startFakeCall(context),
+                  icon: const Icon(Icons.phone_in_talk),
+                  label: const Text('Fake Call'),
+                ),
+              ),
+              const SizedBox(height: 28),
+              const Padding(
+                padding: EdgeInsets.symmetric(horizontal: 32),
+                child: Text(
+                  'This app supports, but does not replace, calling '
+                  'emergency services.',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(fontSize: 12, color: Colors.grey),
+                ),
+              ),
+              const SizedBox(height: 16),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+// ---------------------------------------------------------------
+// FAKE CALL SCREEN: looks like an incoming call, then an active call
+// ---------------------------------------------------------------
+class FakeCallScreen extends StatefulWidget {
+  final String callerName;
+  const FakeCallScreen({super.key, required this.callerName});
+
+  @override
+  State<FakeCallScreen> createState() => _FakeCallScreenState();
+}
+
+class _FakeCallScreenState extends State<FakeCallScreen> {
+  bool _answered = false;
+  int _seconds = 0;
+  Timer? _callTimer;
+  Timer? _ringTimer;
+
+  @override
+  void initState() {
+    super.initState();
+    HapticFeedback.heavyImpact();
+    _ringTimer = Timer.periodic(
+      const Duration(seconds: 2),
+      (_) => HapticFeedback.heavyImpact(),
+    );
+  }
+
+  @override
+  void dispose() {
+    _callTimer?.cancel();
+    _ringTimer?.cancel();
+    super.dispose();
+  }
+
+  void _answer() {
+    _ringTimer?.cancel();
+    setState(() => _answered = true);
+    _callTimer = Timer.periodic(
+      const Duration(seconds: 1),
+      (_) => setState(() => _seconds++),
+    );
+  }
+
+  void _end() => Navigator.pop(context);
+
+  String _format(int total) {
+    final m = (total ~/ 60).toString().padLeft(2, '0');
+    final s = (total % 60).toString().padLeft(2, '0');
+    return '$m:$s';
+  }
+
+  Widget _roundButton({
+    required Color color,
+    required IconData icon,
+    required String label,
+    required VoidCallback onPressed,
+  }) {
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        GestureDetector(
+          onTap: onPressed,
+          child: CircleAvatar(
+            radius: 36,
+            backgroundColor: color,
+            child: Icon(icon, color: Colors.white, size: 34),
+          ),
+        ),
+        const SizedBox(height: 8),
+        Text(label, style: const TextStyle(color: Colors.white70)),
+      ],
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final initial = widget.callerName.isEmpty
+        ? '?'
+        : widget.callerName[0].toUpperCase();
+
+    return Scaffold(
+      backgroundColor: const Color(0xFF1C1C1E),
+      body: SafeArea(
+        child: Column(
+          children: [
+            const SizedBox(height: 64),
+            Text(
+              _answered ? _format(_seconds) : 'mobile',
+              style: const TextStyle(color: Colors.white70, fontSize: 18),
             ),
             const SizedBox(height: 12),
-            OutlinedButton.icon(
-              onPressed: () =>
-                  _showMessage(context, 'Fake call comes on Day 5'),
-              icon: const Icon(Icons.phone_in_talk),
-              label: const Text('Fake Call'),
+            Text(
+              widget.callerName,
+              style: const TextStyle(
+                color: Colors.white,
+                fontSize: 36,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+            const SizedBox(height: 32),
+            CircleAvatar(
+              radius: 56,
+              backgroundColor: Colors.grey.shade700,
+              child: Text(
+                initial,
+                style: const TextStyle(color: Colors.white, fontSize: 48),
+              ),
+            ),
+            const Spacer(),
+            Padding(
+              padding: const EdgeInsets.only(bottom: 64),
+              child: _answered
+                  ? _roundButton(
+                      color: Colors.red,
+                      icon: Icons.call_end,
+                      label: 'End',
+                      onPressed: _end,
+                    )
+                  : Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                      children: [
+                        _roundButton(
+                          color: Colors.red,
+                          icon: Icons.call_end,
+                          label: 'Decline',
+                          onPressed: _end,
+                        ),
+                        _roundButton(
+                          color: Colors.green,
+                          icon: Icons.call,
+                          label: 'Accept',
+                          onPressed: _answer,
+                        ),
+                      ],
+                    ),
             ),
           ],
         ),
@@ -549,7 +784,9 @@ class _ContactsScreenState extends State<ContactsScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Trusted Contacts')),
+      appBar: AppBar(
+        title: Text('Trusted Contacts (${_contacts.length}/5)'),
+      ),
       floatingActionButton: FloatingActionButton(
         onPressed: _addContact,
         child: const Icon(Icons.add),
