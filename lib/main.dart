@@ -9,6 +9,27 @@ import 'package:url_launcher/url_launcher.dart';
 void main() => runApp(const SafetyApp());
 
 // ---------------------------------------------------------------
+// SETTINGS: change this to your country's emergency number
+// ---------------------------------------------------------------
+const String emergencyNumber = '112';
+
+// ---------------------------------------------------------------
+// HELPERS: open the phone's SMS app / dialer
+// ---------------------------------------------------------------
+Future<bool> openSms(String phone, String message) {
+  final uri = Uri(
+    scheme: 'sms',
+    path: phone,
+    query: 'body=${Uri.encodeComponent(message)}',
+  );
+  return launchUrl(uri);
+}
+
+Future<bool> openCall(String phone) {
+  return launchUrl(Uri(scheme: 'tel', path: phone));
+}
+
+// ---------------------------------------------------------------
 // DATA: a contact and how we save it on the phone
 // ---------------------------------------------------------------
 class Contact {
@@ -94,7 +115,7 @@ class SafetyApp extends StatelessWidget {
 }
 
 // ---------------------------------------------------------------
-// HOME SCREEN: big SOS button + two helper buttons
+// HOME SCREEN: big SOS button + emergency call + fake call
 // ---------------------------------------------------------------
 class HomeScreen extends StatelessWidget {
   const HomeScreen({super.key});
@@ -122,6 +143,33 @@ class HomeScreen extends StatelessWidget {
       context,
       MaterialPageRoute(builder: (_) => SosScreen(contacts: contacts)),
     );
+  }
+
+  Future<void> _callEmergency(BuildContext context) async {
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Call emergency?'),
+        content: Text('This will dial $emergencyNumber.'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel'),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Call'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirm != true || !context.mounted) return;
+
+    final ok = await openCall(emergencyNumber);
+    if (!ok && context.mounted) {
+      _showMessage(context, 'Could not open the dialer on this device');
+    }
   }
 
   @override
@@ -178,8 +226,7 @@ class HomeScreen extends StatelessWidget {
             ),
             const SizedBox(height: 48),
             ElevatedButton.icon(
-              onPressed: () =>
-                  _showMessage(context, 'Emergency call comes on Day 4'),
+              onPressed: () => _callEmergency(context),
               icon: const Icon(Icons.call),
               label: const Text('Call Emergency'),
             ),
@@ -198,7 +245,7 @@ class HomeScreen extends StatelessWidget {
 }
 
 // ---------------------------------------------------------------
-// SOS SCREEN: 5-second countdown -> get location -> build message
+// SOS SCREEN: countdown -> location -> message -> send SMS
 // ---------------------------------------------------------------
 enum SosStage { countdown, locating, ready, error }
 
@@ -217,6 +264,7 @@ class _SosScreenState extends State<SosScreen> {
   String _message = '';
   String _link = '';
   String _error = '';
+  final Set<String> _sent = {};
 
   @override
   void initState() {
@@ -263,6 +311,20 @@ class _SosScreenState extends State<SosScreen> {
 
   Future<void> _openMap() async {
     await launchUrl(Uri.parse(_link), mode: LaunchMode.externalApplication);
+  }
+
+  Future<void> _sendSms(Contact contact) async {
+    final ok = await openSms(contact.phone, _message);
+    if (!mounted) return;
+    if (ok) {
+      setState(() => _sent.add(contact.phone));
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Could not open the SMS app on this device'),
+        ),
+      );
+    }
   }
 
   @override
@@ -319,39 +381,43 @@ class _SosScreenState extends State<SosScreen> {
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              const Icon(Icons.check_circle, color: Colors.green, size: 72),
-              const SizedBox(height: 12),
+              const Icon(Icons.check_circle, color: Colors.green, size: 64),
+              const SizedBox(height: 8),
               const Text(
                 'Alert ready',
                 style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold),
               ),
-              const SizedBox(height: 16),
+              const SizedBox(height: 12),
               Card(
                 child: Padding(
                   padding: const EdgeInsets.all(16),
                   child: SelectableText(_message),
                 ),
               ),
-              const SizedBox(height: 16),
+              const SizedBox(height: 12),
               const Text(
-                'Will be sent to:',
-                style: TextStyle(fontWeight: FontWeight.w600),
-              ),
-              ...widget.contacts.map(
-                (c) => ListTile(
-                  dense: true,
-                  leading: const Icon(Icons.person),
-                  title: Text(c.name),
-                  subtitle: Text(c.phone),
-                ),
+                'Tap Send for each contact. Your SMS app opens with the '
+                'message ready, then press send there.',
+                textAlign: TextAlign.center,
               ),
               const SizedBox(height: 8),
-              const Text(
-                'Real SMS sending is added on Day 4.',
-                style: TextStyle(fontStyle: FontStyle.italic),
-              ),
-              const SizedBox(height: 16),
-              ElevatedButton.icon(
+              ...widget.contacts.map((c) {
+                final sent = _sent.contains(c.phone);
+                return ListTile(
+                  leading: Icon(
+                    sent ? Icons.check_circle : Icons.person,
+                    color: sent ? Colors.green : null,
+                  ),
+                  title: Text(c.name),
+                  subtitle: Text(c.phone),
+                  trailing: FilledButton(
+                    onPressed: () => _sendSms(c),
+                    child: Text(sent ? 'Resend' : 'Send SMS'),
+                  ),
+                );
+              }),
+              const SizedBox(height: 8),
+              OutlinedButton.icon(
                 onPressed: _openMap,
                 icon: const Icon(Icons.map),
                 label: const Text('Open location in Maps'),
