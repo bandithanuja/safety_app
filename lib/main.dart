@@ -7,6 +7,13 @@ import 'package:geolocator/geolocator.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher/url_launcher.dart';
 
+// ---------------------------------------------------------------
+// COLOURS: change these three to restyle the whole app
+// ---------------------------------------------------------------
+const Color kDarkPink = Color(0xFFC2185B); // main dark pink
+const Color kLightPink = Color(0xFFFCE4EC); // pink background
+const Color kGlowPink = Color(0xFFF48FB1); // glow around the SOS button
+
 void main() => runApp(const SafetyApp());
 
 // ---------------------------------------------------------------
@@ -107,8 +114,13 @@ class SafetyApp extends StatelessWidget {
       title: 'Safety App',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
-        colorSchemeSeed: Colors.red,
+        colorSchemeSeed: kDarkPink,
         useMaterial3: true,
+        scaffoldBackgroundColor: kLightPink,
+        appBarTheme: const AppBarTheme(
+          backgroundColor: kLightPink,
+          surfaceTintColor: Colors.transparent,
+        ),
       ),
       home: const HomeScreen(),
     );
@@ -277,11 +289,11 @@ class HomeScreen extends StatelessWidget {
                   height: 220,
                   alignment: Alignment.center,
                   decoration: BoxDecoration(
-                    color: Colors.red,
+                    color: kDarkPink,
                     shape: BoxShape.circle,
                     boxShadow: [
                       BoxShadow(
-                        color: Colors.red.shade200,
+                        color: kGlowPink,
                         blurRadius: 30,
                         spreadRadius: 8,
                       ),
@@ -586,7 +598,7 @@ class _SosScreenState extends State<SosScreen> {
               style: const TextStyle(
                 fontSize: 96,
                 fontWeight: FontWeight.bold,
-                color: Colors.red,
+                color: kDarkPink,
               ),
             ),
             const SizedBox(height: 32),
@@ -669,7 +681,7 @@ class _SosScreenState extends State<SosScreen> {
         return Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            const Icon(Icons.error_outline, color: Colors.red, size: 72),
+            const Icon(Icons.error_outline, color: kDarkPink, size: 72),
             const SizedBox(height: 12),
             Text(_error, textAlign: TextAlign.center),
             const SizedBox(height: 24),
@@ -814,7 +826,7 @@ class _ContactsScreenState extends State<ContactsScreen> {
                       title: Text(c.name),
                       subtitle: Text(c.phone),
                       trailing: IconButton(
-                        icon: const Icon(Icons.delete, color: Colors.red),
+                        icon: const Icon(Icons.delete, color: kDarkPink),
                         onPressed: () => _deleteContact(index),
                       ),
                     );
