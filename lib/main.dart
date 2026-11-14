@@ -20,6 +20,31 @@ const Color kGlowPink = Color(0xFFF48FB1); // glow around the SOS button
 // browsers only allow sound after a tap.
 final AudioPlayer ringPlayer = AudioPlayer();
 
+// Lets the journey timer open the SOS screen from anywhere in the app.
+final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>();
+
+// Default messages (the user can change them in Settings).
+const String kDefaultAlert = 'EMERGENCY! I need help. My current location:';
+const String kDefaultSafe =
+    "I'm safe now. Sorry for the scare, no need to worry.";
+
+String formatDuration(int totalSeconds) {
+  final h = totalSeconds ~/ 3600;
+  final m = ((totalSeconds % 3600) ~/ 60).toString().padLeft(2, '0');
+  final s = (totalSeconds % 60).toString().padLeft(2, '0');
+  return h > 0 ? '$h:$m:$s' : '$m:$s';
+}
+
+// Opens Google Maps with a search such as "police station near me".
+Future<bool> openMapsSearch(String query) {
+  final uri = Uri.https(
+    'www.google.com',
+    '/maps/search/',
+    {'api': '1', 'query': query},
+  );
+  return launchUrl(uri, mode: LaunchMode.externalApplication);
+}
+
 void main() => runApp(const SafetyApp());
 
 // ---------------------------------------------------------------
@@ -109,6 +134,76 @@ class LocationService {
 }
 
 // ---------------------------------------------------------------
+// SETTINGS: custom SOS message and "I'm safe" message
+// ---------------------------------------------------------------
+class AppSettings {
+  final String alert;
+  final String safe;
+  AppSettings(this.alert, this.safe);
+}
+
+class SettingsStorage {
+  static Future<AppSettings> load() async {
+    final prefs = await SharedPreferences.getInstance();
+    return AppSettings(
+      prefs.getString('alert_message') ?? kDefaultAlert,
+      prefs.getString('safe_message') ?? kDefaultSafe,
+    );
+  }
+
+  static Future<void> save(String alert, String safe) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('alert_message', alert);
+    await prefs.setString('safe_message', safe);
+  }
+}
+
+// ---------------------------------------------------------------
+// SAFE JOURNEY TIMER: starts an SOS if the user does not check in.
+// It only runs while the app is open.
+// ---------------------------------------------------------------
+class JourneyTimer {
+  // null = no journey running, otherwise the seconds left
+  static final ValueNotifier<int?> secondsLeft = ValueNotifier<int?>(null);
+  static Timer? _timer;
+  static DateTime? _end;
+
+  static void start(int seconds) {
+    cancel();
+    _end = DateTime.now().add(Duration(seconds: seconds));
+    secondsLeft.value = seconds;
+    _timer = Timer.periodic(const Duration(seconds: 1), (_) {
+      final end = _end;
+      if (end == null) return;
+      final ms = end.difference(DateTime.now()).inMilliseconds;
+      final left = (ms / 1000).ceil();
+      if (left <= 0) {
+        cancel();
+        _expired();
+      } else {
+        secondsLeft.value = left;
+      }
+    });
+  }
+
+  static void cancel() {
+    _timer?.cancel();
+    _timer = null;
+    _end = null;
+    secondsLeft.value = null;
+  }
+
+  static Future<void> _expired() async {
+    final contacts = await ContactStorage.load();
+    final navigator = navigatorKey.currentState;
+    if (navigator == null || contacts.isEmpty) return;
+    navigator.push(
+      MaterialPageRoute(builder: (_) => SosScreen(contacts: contacts)),
+    );
+  }
+}
+
+// ---------------------------------------------------------------
 // APP
 // ---------------------------------------------------------------
 class SafetyApp extends StatelessWidget {
@@ -118,6 +213,7 @@ class SafetyApp extends StatelessWidget {
   Widget build(BuildContext context) {
     return MaterialApp(
       title: 'Safety App',
+      navigatorKey: navigatorKey,
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
         colorSchemeSeed: kDarkPink,
@@ -265,12 +361,54 @@ class HomeScreen extends StatelessWidget {
     );
   }
 
+  Future<void> _openImSafe(BuildContext context) async {
+    final contacts = await ContactStorage.load();
+    final settings = await SettingsStorage.load();
+    if (!context.mounted) return;
+
+    if (contacts.isEmpty) {
+      _showMessage(context, 'Add at least one trusted contact first');
+      return;
+    }
+
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => SendMessageScreen(
+          title: "I'm Safe",
+          message: settings.safe,
+          contacts: contacts,
+        ),
+      ),
+    );
+  }
+
+  Widget _tile(IconData icon, String label, VoidCallback onTap) {
+    return SizedBox(
+      width: 150,
+      height: 48,
+      child: FilledButton.tonalIcon(
+        onPressed: onTap,
+        icon: Icon(icon, size: 20),
+        label: Text(label),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
         title: const Text('Safety App'),
         actions: [
+          IconButton(
+            tooltip: 'Message settings',
+            icon: const Icon(Icons.settings),
+            onPressed: () => Navigator.push(
+              context,
+              MaterialPageRoute(builder: (_) => const SettingsScreen()),
+            ),
+          ),
           IconButton(
             tooltip: 'Trusted contacts',
             icon: const Icon(Icons.people),
@@ -286,6 +424,27 @@ class HomeScreen extends StatelessWidget {
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
+              ValueListenableBuilder<int?>(
+                valueListenable: JourneyTimer.secondsLeft,
+                builder: (context, left, _) {
+                  if (left == null) return const SizedBox.shrink();
+                  return Padding(
+                    padding: const EdgeInsets.only(bottom: 20),
+                    child: ActionChip(
+                      avatar: const Icon(Icons.timer, size: 18),
+                      label: Text(
+                        'Safe journey active: ${formatDuration(left)} left',
+                      ),
+                      onPressed: () => Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (_) => const JourneyScreen(),
+                        ),
+                      ),
+                    ),
+                  );
+                },
+              ),
               const Text(
                 'In danger? Press SOS',
                 style: TextStyle(fontSize: 20, fontWeight: FontWeight.w500),
@@ -337,6 +496,47 @@ class HomeScreen extends StatelessWidget {
                   icon: const Icon(Icons.phone_in_talk),
                   label: const Text('Fake Call'),
                 ),
+              ),
+              const SizedBox(height: 20),
+              Wrap(
+                spacing: 12,
+                runSpacing: 12,
+                alignment: WrapAlignment.center,
+                children: [
+                  _tile(
+                    Icons.local_police,
+                    'Nearby Help',
+                    () => Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (_) => const NearbyHelpScreen(),
+                      ),
+                    ),
+                  ),
+                  _tile(
+                    Icons.timer,
+                    'Safe Journey',
+                    () => Navigator.push(
+                      context,
+                      MaterialPageRoute(builder: (_) => const JourneyScreen()),
+                    ),
+                  ),
+                  _tile(
+                    Icons.support_agent,
+                    'Helplines',
+                    () => Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (_) => const HelplinesScreen(),
+                      ),
+                    ),
+                  ),
+                  _tile(
+                    Icons.verified_user,
+                    "I'm Safe",
+                    () => _openImSafe(context),
+                  ),
+                ],
               ),
               const SizedBox(height: 28),
               const Padding(
@@ -549,6 +749,8 @@ class _SosScreenState extends State<SosScreen> {
   String _link = '';
   String _error = '';
   final Set<String> _sent = {};
+  String _safeText = kDefaultSafe;
+  bool _showSafe = false;
 
   @override
   void initState() {
@@ -577,11 +779,13 @@ class _SosScreenState extends State<SosScreen> {
     setState(() => _stage = SosStage.locating);
     try {
       final position = await LocationService.getCurrentLocation();
+      final settings = await SettingsStorage.load();
       if (!mounted) return;
       final link = LocationService.mapsLink(position);
       setState(() {
         _link = link;
-        _message = 'EMERGENCY! I need help. My current location: $link';
+        _message = '${settings.alert} $link';
+        _safeText = settings.safe;
         _stage = SosStage.ready;
       });
     } catch (e) {
@@ -593,15 +797,18 @@ class _SosScreenState extends State<SosScreen> {
     }
   }
 
+  String _sentKey(Contact c) => '${_showSafe ? 's' : 'a'}:${c.phone}';
+
   Future<void> _openMap() async {
     await launchUrl(Uri.parse(_link), mode: LaunchMode.externalApplication);
   }
 
   Future<void> _sendSms(Contact contact) async {
-    final ok = await openSms(contact.phone, _message);
+    final text = _showSafe ? _safeText : _message;
+    final ok = await openSms(contact.phone, text);
     if (!mounted) return;
     if (ok) {
-      setState(() => _sent.add(contact.phone));
+      setState(() => _sent.add(_sentKey(contact)));
     } else {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
@@ -672,10 +879,26 @@ class _SosScreenState extends State<SosScreen> {
                 style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold),
               ),
               const SizedBox(height: 12),
+              Wrap(
+                spacing: 8,
+                children: [
+                  ChoiceChip(
+                    label: const Text('SOS alert'),
+                    selected: !_showSafe,
+                    onSelected: (_) => setState(() => _showSafe = false),
+                  ),
+                  ChoiceChip(
+                    label: const Text("I'm safe"),
+                    selected: _showSafe,
+                    onSelected: (_) => setState(() => _showSafe = true),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 8),
               Card(
                 child: Padding(
                   padding: const EdgeInsets.all(16),
-                  child: SelectableText(_message),
+                  child: SelectableText(_showSafe ? _safeText : _message),
                 ),
               ),
               const SizedBox(height: 12),
@@ -686,7 +909,7 @@ class _SosScreenState extends State<SosScreen> {
               ),
               const SizedBox(height: 8),
               ...widget.contacts.map((c) {
-                final sent = _sent.contains(c.phone);
+                final sent = _sent.contains(_sentKey(c));
                 return ListTile(
                   leading: Icon(
                     sent ? Icons.check_circle : Icons.person,
@@ -733,6 +956,436 @@ class _SosScreenState extends State<SosScreen> {
           ],
         );
     }
+  }
+}
+
+// ---------------------------------------------------------------
+// NEARBY HELP: opens Google Maps searches near the user
+// ---------------------------------------------------------------
+class NearbyHelpScreen extends StatelessWidget {
+  const NearbyHelpScreen({super.key});
+
+  static const _places = [
+    ('Police stations', 'police station near me', Icons.local_police),
+    ('Hospitals', 'hospital near me', Icons.local_hospital),
+    ('Pharmacies', 'pharmacy near me', Icons.local_pharmacy),
+  ];
+
+  Future<void> _open(BuildContext context, String query) async {
+    final ok = await openMapsSearch(query);
+    if (!ok && context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Could not open Maps on this device')),
+      );
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('Nearby Help')),
+      body: ListView(
+        padding: const EdgeInsets.all(16),
+        children: [
+          const Text(
+            'Opens Google Maps with results near your current location. '
+            'Allow location if Maps asks.',
+          ),
+          const SizedBox(height: 12),
+          ..._places.map(
+            (p) => Card(
+              child: ListTile(
+                leading: Icon(p.$3, color: kDarkPink),
+                title: Text(p.$1),
+                subtitle: const Text('Tap to open in Maps'),
+                trailing: const Icon(Icons.open_in_new),
+                onTap: () => _open(context, p.$2),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ---------------------------------------------------------------
+// HELPLINES: tap to open the dialer (numbers for India)
+// ---------------------------------------------------------------
+class HelplinesScreen extends StatelessWidget {
+  const HelplinesScreen({super.key});
+
+  static const _helplines = [
+    ('112', 'National Emergency Number',
+        'Police, fire, ambulance, women and child emergencies'),
+    ('100', 'Police', 'Still active in most states alongside 112'),
+    ('181', 'Women Helpline', 'Women in distress, domestic violence support'),
+    ('1091', 'Women in Distress', 'Police women helpline, works in some states'),
+    ('102', 'Ambulance', 'National ambulance service (108 in many states)'),
+    ('1098', 'Child Helpline', 'Children in need of care and protection'),
+    ('1930', 'Cyber Crime Helpline', 'Report online fraud or cyber crime'),
+  ];
+
+  Future<void> _call(BuildContext context, String number) async {
+    final ok = await openCall(number);
+    if (!ok && context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Could not open the dialer here')),
+      );
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('Helplines')),
+      body: ListView(
+        padding: const EdgeInsets.all(16),
+        children: [
+          const Text(
+            'Numbers for India. Availability can vary by state. '
+            'Tap a number to open the dialer.',
+          ),
+          const SizedBox(height: 12),
+          ..._helplines.map(
+            (h) => Card(
+              child: ListTile(
+                leading: const Icon(Icons.support_agent, color: kDarkPink),
+                title: Text('${h.$1}  ${h.$2}'),
+                subtitle: Text(h.$3),
+                trailing: const Icon(Icons.call),
+                onTap: () => _call(context, h.$1),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ---------------------------------------------------------------
+// SETTINGS: edit the SOS message and the "I'm safe" message
+// ---------------------------------------------------------------
+class SettingsScreen extends StatefulWidget {
+  const SettingsScreen({super.key});
+
+  @override
+  State<SettingsScreen> createState() => _SettingsScreenState();
+}
+
+class _SettingsScreenState extends State<SettingsScreen> {
+  final _alertController = TextEditingController();
+  final _safeController = TextEditingController();
+  bool _loading = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  @override
+  void dispose() {
+    _alertController.dispose();
+    _safeController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _load() async {
+    final s = await SettingsStorage.load();
+    if (!mounted) return;
+    setState(() {
+      _alertController.text = s.alert;
+      _safeController.text = s.safe;
+      _loading = false;
+    });
+  }
+
+  void _reset() {
+    setState(() {
+      _alertController.text = kDefaultAlert;
+      _safeController.text = kDefaultSafe;
+    });
+  }
+
+  Future<void> _save() async {
+    final alert = _alertController.text.trim();
+    final safe = _safeController.text.trim();
+    await SettingsStorage.save(
+      alert.isEmpty ? kDefaultAlert : alert,
+      safe.isEmpty ? kDefaultSafe : safe,
+    );
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Messages saved')),
+    );
+    Navigator.pop(context);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('Message Settings')),
+      body: _loading
+          ? const Center(child: CircularProgressIndicator())
+          : ListView(
+              padding: const EdgeInsets.all(16),
+              children: [
+                const Text(
+                  'SOS message',
+                  style: TextStyle(fontWeight: FontWeight.w600),
+                ),
+                const SizedBox(height: 8),
+                TextField(
+                  controller: _alertController,
+                  maxLines: 3,
+                  decoration: const InputDecoration(
+                    border: OutlineInputBorder(),
+                    helperText:
+                        'Your location link is added automatically after this text.',
+                    helperMaxLines: 2,
+                  ),
+                ),
+                const SizedBox(height: 20),
+                const Text(
+                  "I'm safe message",
+                  style: TextStyle(fontWeight: FontWeight.w600),
+                ),
+                const SizedBox(height: 8),
+                TextField(
+                  controller: _safeController,
+                  maxLines: 3,
+                  decoration: const InputDecoration(
+                    border: OutlineInputBorder(),
+                  ),
+                ),
+                const SizedBox(height: 24),
+                Row(
+                  children: [
+                    Expanded(
+                      child: OutlinedButton(
+                        onPressed: _reset,
+                        child: const Text('Reset'),
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: FilledButton(
+                        onPressed: _save,
+                        child: const Text('Save'),
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+    );
+  }
+}
+
+// ---------------------------------------------------------------
+// SEND MESSAGE: send one message to each trusted contact
+// ---------------------------------------------------------------
+class SendMessageScreen extends StatefulWidget {
+  final String title;
+  final String message;
+  final List<Contact> contacts;
+  const SendMessageScreen({
+    super.key,
+    required this.title,
+    required this.message,
+    required this.contacts,
+  });
+
+  @override
+  State<SendMessageScreen> createState() => _SendMessageScreenState();
+}
+
+class _SendMessageScreenState extends State<SendMessageScreen> {
+  final Set<String> _sent = {};
+
+  Future<void> _send(Contact contact) async {
+    final ok = await openSms(contact.phone, widget.message);
+    if (!mounted) return;
+    if (ok) {
+      setState(() => _sent.add(contact.phone));
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Could not open the SMS app on this device'),
+        ),
+      );
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: Text(widget.title)),
+      body: ListView(
+        padding: const EdgeInsets.all(16),
+        children: [
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: SelectableText(widget.message),
+            ),
+          ),
+          const SizedBox(height: 12),
+          const Text(
+            'Tap Send for each contact. Your SMS app opens with the '
+            'message ready, then press send there.',
+            textAlign: TextAlign.center,
+          ),
+          const SizedBox(height: 8),
+          ...widget.contacts.map((c) {
+            final sent = _sent.contains(c.phone);
+            return ListTile(
+              leading: Icon(
+                sent ? Icons.check_circle : Icons.person,
+                color: sent ? Colors.green : null,
+              ),
+              title: Text(c.name),
+              subtitle: Text(c.phone),
+              trailing: FilledButton(
+                onPressed: () => _send(c),
+                child: Text(sent ? 'Resend' : 'Send SMS'),
+              ),
+            );
+          }),
+        ],
+      ),
+    );
+  }
+}
+
+// ---------------------------------------------------------------
+// SAFE JOURNEY: auto SOS if the user does not check in in time
+// ---------------------------------------------------------------
+class JourneyScreen extends StatefulWidget {
+  const JourneyScreen({super.key});
+
+  @override
+  State<JourneyScreen> createState() => _JourneyScreenState();
+}
+
+class _JourneyScreenState extends State<JourneyScreen> {
+  static const _options = [1, 15, 30, 60];
+  int _minutes = 15;
+
+  void _showMessage(String message) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(message)),
+    );
+  }
+
+  Future<void> _start() async {
+    final contacts = await ContactStorage.load();
+    if (!mounted) return;
+    if (contacts.isEmpty) {
+      _showMessage('Add at least one trusted contact first');
+      return;
+    }
+    JourneyTimer.start(_minutes * 60);
+    _showMessage('Safe journey started');
+  }
+
+  void _end() {
+    JourneyTimer.cancel();
+    _showMessage('Journey ended. Glad you are safe!');
+  }
+
+  Widget _setup() {
+    return ListView(
+      padding: const EdgeInsets.all(24),
+      children: [
+        const Text(
+          'Choose how long your trip will take. If you do not tap '
+          '"I\'m safe" before time runs out, an SOS alert starts '
+          'automatically, with a 5-second cancel countdown.',
+          style: TextStyle(fontSize: 16),
+        ),
+        const SizedBox(height: 12),
+        const Text(
+          'Keep the app open: the timer only runs while the app is open.',
+          style: TextStyle(fontStyle: FontStyle.italic),
+        ),
+        const SizedBox(height: 24),
+        Wrap(
+          spacing: 8,
+          runSpacing: 8,
+          children: _options
+              .map(
+                (m) => ChoiceChip(
+                  label: Text(m == 1 ? '1 min (demo)' : '$m min'),
+                  selected: _minutes == m,
+                  onSelected: (_) => setState(() => _minutes = m),
+                ),
+              )
+              .toList(),
+        ),
+        const SizedBox(height: 32),
+        SizedBox(
+          height: 52,
+          child: FilledButton.icon(
+            onPressed: _start,
+            icon: const Icon(Icons.play_arrow),
+            label: const Text('Start journey'),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _active(int left) {
+    return Padding(
+      padding: const EdgeInsets.all(24),
+      child: Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            const Text('Time left', style: TextStyle(fontSize: 20)),
+            const SizedBox(height: 12),
+            Text(
+              formatDuration(left),
+              style: const TextStyle(
+                fontSize: 64,
+                fontWeight: FontWeight.bold,
+                color: kDarkPink,
+              ),
+            ),
+            const SizedBox(height: 16),
+            const Text(
+              'If this reaches zero, an SOS alert starts.',
+              textAlign: TextAlign.center,
+            ),
+            const SizedBox(height: 32),
+            SizedBox(
+              width: 260,
+              height: 56,
+              child: FilledButton.icon(
+                onPressed: _end,
+                icon: const Icon(Icons.verified_user),
+                label: const Text("I'm safe, end journey"),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('Safe Journey')),
+      body: ValueListenableBuilder<int?>(
+        valueListenable: JourneyTimer.secondsLeft,
+        builder: (context, left, _) =>
+            left == null ? _setup() : _active(left),
+      ),
+    );
   }
 }
 
