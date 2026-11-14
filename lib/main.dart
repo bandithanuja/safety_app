@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 
+import 'package:audioplayers/audioplayers.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:geolocator/geolocator.dart';
@@ -13,6 +14,11 @@ import 'package:url_launcher/url_launcher.dart';
 const Color kDarkPink = Color(0xFFC2185B); // main dark pink
 const Color kLightPink = Color(0xFFFCE4EC); // pink background
 const Color kGlowPink = Color(0xFFF48FB1); // glow around the SOS button
+
+// One shared audio player for the fake call ringtone.
+// It is "unlocked" by a silent sound when you tap Start, because
+// browsers only allow sound after a tap.
+final AudioPlayer ringPlayer = AudioPlayer();
 
 void main() => runApp(const SafetyApp());
 
@@ -227,7 +233,10 @@ class HomeScreen extends StatelessWidget {
               child: const Text('Cancel'),
             ),
             ElevatedButton(
-              onPressed: () => Navigator.pop(ctx, true),
+              onPressed: () {
+                ringPlayer.play(AssetSource('silence.wav')).catchError((_) {});
+                Navigator.pop(ctx, true);
+              },
               child: const Text('Start'),
             ),
           ],
@@ -365,6 +374,23 @@ class _FakeCallScreenState extends State<FakeCallScreen> {
   Timer? _callTimer;
   Timer? _ringTimer;
 
+  Future<void> _startRinging() async {
+    if (_answered) return;
+    try {
+      await ringPlayer.stop();
+      await ringPlayer.setReleaseMode(ReleaseMode.loop);
+      await ringPlayer.play(AssetSource('ringtone.wav'));
+    } catch (_) {
+      // Sound blocked by the browser: tapping the screen tries again.
+    }
+  }
+
+  Future<void> _stopRinging() async {
+    try {
+      await ringPlayer.stop();
+    } catch (_) {}
+  }
+
   @override
   void initState() {
     super.initState();
@@ -373,17 +399,20 @@ class _FakeCallScreenState extends State<FakeCallScreen> {
       const Duration(seconds: 2),
       (_) => HapticFeedback.heavyImpact(),
     );
+    _startRinging();
   }
 
   @override
   void dispose() {
     _callTimer?.cancel();
     _ringTimer?.cancel();
+    _stopRinging();
     super.dispose();
   }
 
   void _answer() {
     _ringTimer?.cancel();
+    _stopRinging();
     setState(() => _answered = true);
     _callTimer = Timer.periodic(
       const Duration(seconds: 1),
@@ -430,7 +459,14 @@ class _FakeCallScreenState extends State<FakeCallScreen> {
 
     return Scaffold(
       backgroundColor: const Color(0xFF1C1C1E),
-      body: SafeArea(
+      body: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: () {
+          if (!_answered && ringPlayer.state != PlayerState.playing) {
+            _startRinging();
+          }
+        },
+        child: SafeArea(
         child: Column(
           children: [
             const SizedBox(height: 64),
@@ -486,6 +522,7 @@ class _FakeCallScreenState extends State<FakeCallScreen> {
             ),
           ],
         ),
+      ),
       ),
     );
   }
