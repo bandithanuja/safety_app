@@ -163,41 +163,130 @@ class SettingsStorage {
 // It only runs while the app is open.
 // ---------------------------------------------------------------
 class JourneyTimer {
-  // null = no journey running, otherwise the seconds left
+  // Seconds until the expected arrival (null = no journey running).
   static final ValueNotifier<int?> secondsLeft = ValueNotifier<int?>(null);
-  static Timer? _timer;
-  static DateTime? _end;
+  // Seconds left to answer the reminder (null = no reminder showing).
+  static final ValueNotifier<int?> graceLeft = ValueNotifier<int?>(null);
 
-  static void start(int seconds) {
+  static Timer? _timer;
+  static Timer? _graceTimer;
+  static DateTime? _end;
+  static DateTime? _graceEnd;
+  static bool _notifyContacts = true;
+  static int _graceSeconds = 120;
+
+  static bool get notifyContacts => _notifyContacts;
+
+  static int _secondsUntil(DateTime end) =>
+      (end.difference(DateTime.now()).inMilliseconds / 1000).ceil();
+
+  static void start(
+    int seconds, {
+    int graceSeconds = 120,
+    bool notifyContacts = true,
+  }) {
     cancel();
+    _graceSeconds = graceSeconds;
+    _notifyContacts = notifyContacts;
     _end = DateTime.now().add(Duration(seconds: seconds));
     secondsLeft.value = seconds;
     _timer = Timer.periodic(const Duration(seconds: 1), (_) {
       final end = _end;
       if (end == null) return;
-      final ms = end.difference(DateTime.now()).inMilliseconds;
-      final left = (ms / 1000).ceil();
+      final left = _secondsUntil(end);
       if (left <= 0) {
-        cancel();
-        _expired();
+        _timer?.cancel();
+        _timer = null;
+        _end = null;
+        secondsLeft.value = null;
+        _askForCheckIn();
       } else {
         secondsLeft.value = left;
       }
     });
   }
 
+  // Stops everything: the journey, the reminder and the alarm sound.
   static void cancel() {
     _timer?.cancel();
     _timer = null;
+    _graceTimer?.cancel();
+    _graceTimer = null;
     _end = null;
+    _graceEnd = null;
     secondsLeft.value = null;
+    graceLeft.value = null;
+    _stopAlarm();
   }
 
-  static Future<void> _expired() async {
+  static Future<void> _stopAlarm() async {
+    try {
+      await ringPlayer.stop();
+    } catch (_) {}
+  }
+
+  static Future<void> _playAlarm() async {
+    try {
+      await ringPlayer.stop();
+      await ringPlayer.setReleaseMode(ReleaseMode.loop);
+      await ringPlayer.play(AssetSource('ringtone.wav'));
+    } catch (_) {
+      // Sound can be blocked by the browser. The screen still shows.
+    }
+  }
+
+  // Expected arrival time reached: remind the user to check in.
+  static void _askForCheckIn() {
+    final navigator = navigatorKey.currentState;
+    if (navigator == null) return;
+    _graceEnd = DateTime.now().add(Duration(seconds: _graceSeconds));
+    graceLeft.value = _graceSeconds;
+    _playAlarm();
+    HapticFeedback.heavyImpact();
+    _graceTimer = Timer.periodic(const Duration(seconds: 1), (_) {
+      final end = _graceEnd;
+      if (end == null) return;
+      final left = _secondsUntil(end);
+      if (left <= 0) {
+        _graceExpired();
+      } else {
+        graceLeft.value = left;
+      }
+    });
+    navigator.push(
+      MaterialPageRoute(builder: (_) => const ArrivalCheckScreen()),
+    );
+  }
+
+  // No answer to the reminder: start the SOS flow if the user chose that.
+  static Future<void> _graceExpired() async {
+    final notify = _notifyContacts;
+    cancel();
+    final navigator = navigatorKey.currentState;
+    if (navigator == null) return;
+    if (notify) {
+      final contacts = await ContactStorage.load();
+      if (contacts.isNotEmpty) {
+        navigator.pushReplacement(
+          MaterialPageRoute(builder: (_) => SosScreen(contacts: contacts)),
+        );
+        return;
+      }
+    }
+    navigator.pop();
+  }
+
+  // The user pressed "I need help" on the reminder screen.
+  static Future<void> needHelp() async {
+    cancel();
     final contacts = await ContactStorage.load();
     final navigator = navigatorKey.currentState;
-    if (navigator == null || contacts.isEmpty) return;
-    navigator.push(
+    if (navigator == null) return;
+    if (contacts.isEmpty) {
+      navigator.pop();
+      return;
+    }
+    navigator.pushReplacement(
       MaterialPageRoute(builder: (_) => SosScreen(contacts: contacts)),
     );
   }
@@ -433,7 +522,7 @@ class HomeScreen extends StatelessWidget {
                     child: ActionChip(
                       avatar: const Icon(Icons.timer, size: 18),
                       label: Text(
-                        'Safe journey active: ${formatDuration(left)} left',
+                        'Arrival check active: ${formatDuration(left)} left',
                       ),
                       onPressed: () => Navigator.push(
                         context,
@@ -515,7 +604,7 @@ class HomeScreen extends StatelessWidget {
                   ),
                   _tile(
                     Icons.timer,
-                    'Safe Journey',
+                    'Arrival Check',
                     () => Navigator.push(
                       context,
                       MaterialPageRoute(builder: (_) => const JourneyScreen()),
@@ -528,6 +617,16 @@ class HomeScreen extends StatelessWidget {
                       context,
                       MaterialPageRoute(
                         builder: (_) => const HelplinesScreen(),
+                      ),
+                    ),
+                  ),
+                  _tile(
+                    Icons.chat_bubble,
+                    'Assistant',
+                    () => Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (_) => const SafetyAssistantScreen(),
                       ),
                     ),
                   ),
@@ -1261,7 +1360,7 @@ class _SendMessageScreenState extends State<SendMessageScreen> {
 }
 
 // ---------------------------------------------------------------
-// SAFE JOURNEY: auto SOS if the user does not check in in time
+// SMART ARRIVAL CHECK: reminder first, then an SOS if no check-in
 // ---------------------------------------------------------------
 class JourneyScreen extends StatefulWidget {
   const JourneyScreen({super.key});
@@ -1271,8 +1370,13 @@ class JourneyScreen extends StatefulWidget {
 }
 
 class _JourneyScreenState extends State<JourneyScreen> {
-  static const _options = [1, 15, 30, 60];
+  static const _durations = [1, 15, 30, 60];
+  static const _graceOptions = [1, 2, 5];
+
   int _minutes = 15;
+  TimeOfDay? _arrival;
+  int _graceMinutes = 2;
+  bool _notify = true;
 
   void _showMessage(String message) {
     ScaffoldMessenger.of(context).showSnackBar(
@@ -1280,20 +1384,48 @@ class _JourneyScreenState extends State<JourneyScreen> {
     );
   }
 
+  int _secondsUntil(TimeOfDay t) {
+    final now = DateTime.now();
+    var target = DateTime(now.year, now.month, now.day, t.hour, t.minute);
+    if (!target.isAfter(now)) {
+      target = target.add(const Duration(days: 1));
+    }
+    return target.difference(now).inSeconds;
+  }
+
+  Future<void> _pickTime() async {
+    final t = await showTimePicker(
+      context: context,
+      initialTime: TimeOfDay.now(),
+    );
+    if (t == null || !mounted) return;
+    setState(() => _arrival = t);
+  }
+
   Future<void> _start() async {
+    // Unlock sound while the user's tap is still fresh (browser rule),
+    // so the reminder alarm can play later.
+    ringPlayer.play(AssetSource('silence.wav')).catchError((_) {});
+
     final contacts = await ContactStorage.load();
     if (!mounted) return;
-    if (contacts.isEmpty) {
+    if (_notify && contacts.isEmpty) {
       _showMessage('Add at least one trusted contact first');
       return;
     }
-    JourneyTimer.start(_minutes * 60);
-    _showMessage('Safe journey started');
+    final arrival = _arrival;
+    final seconds = arrival != null ? _secondsUntil(arrival) : _minutes * 60;
+    JourneyTimer.start(
+      seconds,
+      graceSeconds: _graceMinutes * 60,
+      notifyContacts: _notify,
+    );
+    _showMessage('Arrival check started');
   }
 
-  void _end() {
+  void _arrived() {
     JourneyTimer.cancel();
-    _showMessage('Journey ended. Glad you are safe!');
+    _showMessage('Glad you arrived safely!');
   }
 
   Widget _setup() {
@@ -1301,37 +1433,81 @@ class _JourneyScreenState extends State<JourneyScreen> {
       padding: const EdgeInsets.all(24),
       children: [
         const Text(
-          'Choose how long your trip will take. If you do not tap '
-          '"I\'m safe" before time runs out, an SOS alert starts '
-          'automatically, with a 5-second cancel countdown.',
+          'Set when you expect to arrive. If you have not checked in by '
+          'then, the app reminds you with a loud alert. If you still do '
+          'not respond, it can start an SOS alert for your trusted contacts.',
           style: TextStyle(fontSize: 16),
         ),
-        const SizedBox(height: 12),
+        const SizedBox(height: 8),
         const Text(
-          'Keep the app open: the timer only runs while the app is open.',
+          'Keep the app open: it only runs while the app is open, and the '
+          'SOS step still needs your tap on Send in the SMS app.',
           style: TextStyle(fontStyle: FontStyle.italic),
         ),
         const SizedBox(height: 24),
+        const Text(
+          'I will arrive in',
+          style: TextStyle(fontWeight: FontWeight.w600),
+        ),
+        const SizedBox(height: 8),
         Wrap(
           spacing: 8,
           runSpacing: 8,
-          children: _options
+          children: _durations
               .map(
                 (m) => ChoiceChip(
                   label: Text(m == 1 ? '1 min (demo)' : '$m min'),
-                  selected: _minutes == m,
-                  onSelected: (_) => setState(() => _minutes = m),
+                  selected: _arrival == null && _minutes == m,
+                  onSelected: (_) => setState(() {
+                    _minutes = m;
+                    _arrival = null;
+                  }),
                 ),
               )
               .toList(),
         ),
-        const SizedBox(height: 32),
+        const SizedBox(height: 8),
+        OutlinedButton.icon(
+          onPressed: _pickTime,
+          icon: const Icon(Icons.access_time),
+          label: Text(
+            _arrival == null
+                ? 'Or pick an arrival time'
+                : 'Arrive at ${_arrival!.format(context)}',
+          ),
+        ),
+        const SizedBox(height: 24),
+        const Text(
+          'If I do not check in, wait this long after the reminder',
+          style: TextStyle(fontWeight: FontWeight.w600),
+        ),
+        const SizedBox(height: 8),
+        Wrap(
+          spacing: 8,
+          children: _graceOptions
+              .map(
+                (m) => ChoiceChip(
+                  label: Text('$m min'),
+                  selected: _graceMinutes == m,
+                  onSelected: (_) => setState(() => _graceMinutes = m),
+                ),
+              )
+              .toList(),
+        ),
+        SwitchListTile(
+          contentPadding: EdgeInsets.zero,
+          title: const Text('Then alert my trusted contacts'),
+          subtitle: const Text('Starts the SOS flow if I do not respond'),
+          value: _notify,
+          onChanged: (v) => setState(() => _notify = v),
+        ),
+        const SizedBox(height: 16),
         SizedBox(
           height: 52,
           child: FilledButton.icon(
             onPressed: _start,
             icon: const Icon(Icons.play_arrow),
-            label: const Text('Start journey'),
+            label: const Text('Start arrival check'),
           ),
         ),
       ],
@@ -1345,7 +1521,10 @@ class _JourneyScreenState extends State<JourneyScreen> {
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            const Text('Time left', style: TextStyle(fontSize: 20)),
+            const Text(
+              'Time until expected arrival',
+              style: TextStyle(fontSize: 20),
+            ),
             const SizedBox(height: 12),
             Text(
               formatDuration(left),
@@ -1357,7 +1536,7 @@ class _JourneyScreenState extends State<JourneyScreen> {
             ),
             const SizedBox(height: 16),
             const Text(
-              'If this reaches zero, an SOS alert starts.',
+              'When this reaches zero, the app will ask if you arrived safely.',
               textAlign: TextAlign.center,
             ),
             const SizedBox(height: 32),
@@ -1365,9 +1544,9 @@ class _JourneyScreenState extends State<JourneyScreen> {
               width: 260,
               height: 56,
               child: FilledButton.icon(
-                onPressed: _end,
+                onPressed: _arrived,
                 icon: const Icon(Icons.verified_user),
-                label: const Text("I'm safe, end journey"),
+                label: const Text("I've arrived safely"),
               ),
             ),
           ],
@@ -1379,11 +1558,408 @@ class _JourneyScreenState extends State<JourneyScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Safe Journey')),
+      appBar: AppBar(title: const Text('Smart Arrival Check')),
       body: ValueListenableBuilder<int?>(
         valueListenable: JourneyTimer.secondsLeft,
         builder: (context, left, _) =>
             left == null ? _setup() : _active(left),
+      ),
+    );
+  }
+}
+
+// ---------------------------------------------------------------
+// ARRIVAL REMINDER: "Have you arrived safely?" with a countdown
+// ---------------------------------------------------------------
+class ArrivalCheckScreen extends StatelessWidget {
+  const ArrivalCheckScreen({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return PopScope(
+      canPop: false,
+      child: Scaffold(
+        appBar: AppBar(
+          title: const Text('Arrival check'),
+          automaticallyImplyLeading: false,
+        ),
+        body: ValueListenableBuilder<int?>(
+          valueListenable: JourneyTimer.graceLeft,
+          builder: (context, left, _) {
+            final consequence = JourneyTimer.notifyContacts
+                ? 'Otherwise an alert for your trusted contacts will start.'
+                : 'Otherwise this reminder will close.';
+            return Padding(
+              padding: const EdgeInsets.all(24),
+              child: Center(
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    const Icon(
+                      Icons.notifications_active,
+                      size: 72,
+                      color: kDarkPink,
+                    ),
+                    const SizedBox(height: 16),
+                    const Text(
+                      'Have you arrived safely?',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                        fontSize: 26,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    Text(
+                      left == null
+                          ? ''
+                          : 'Please check in within ${formatDuration(left)}.\n'
+                              '$consequence',
+                      textAlign: TextAlign.center,
+                    ),
+                    const SizedBox(height: 32),
+                    SizedBox(
+                      width: 260,
+                      height: 56,
+                      child: FilledButton.icon(
+                        onPressed: () {
+                          JourneyTimer.cancel();
+                          Navigator.pop(context);
+                        },
+                        icon: const Icon(Icons.verified_user),
+                        label: const Text("Yes, I'm safe"),
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    SizedBox(
+                      width: 260,
+                      height: 56,
+                      child: OutlinedButton.icon(
+                        onPressed: JourneyTimer.needHelp,
+                        icon: const Icon(Icons.sos),
+                        label: const Text('I need help'),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            );
+          },
+        ),
+      ),
+    );
+  }
+}
+
+// ---------------------------------------------------------------
+// SAFETY ASSISTANT: guided, step-by-step help (no AI, no server)
+// All guidance is fixed text, so it is predictable and checkable.
+// ---------------------------------------------------------------
+class _Opt {
+  final String label;
+  final String? next;
+  final String? tel;
+  final String? url;
+  final bool sos;
+  const _Opt(this.label, {this.next, this.tel, this.url, this.sos = false});
+}
+
+class _Node {
+  final String text;
+  final List<_Opt> options;
+  const _Node(this.text, this.options);
+}
+
+class _Msg {
+  final String text;
+  final bool fromUser;
+  _Msg(this.text, this.fromUser);
+}
+
+const String _cyberPortal = 'https://cybercrime.gov.in';
+
+const Map<String, _Node> _assistantNodes = {
+  'start': _Node(
+    "Hi, I'm the Saheli assistant. I'm sorry if something has happened, "
+    "and I'm glad you reached out. I can guide you step by step. This is "
+    "general guidance, not legal advice, and procedures can differ by "
+    "state.\n\nWhat do you need help with?",
+    [
+      _Opt("I'm in danger right now", next: 'danger'),
+      _Opt('Online harassment or cyber crime', next: 'cyber'),
+      _Opt('I want to file a complaint', next: 'complaint'),
+      _Opt('How to keep evidence safe', next: 'evidence'),
+      _Opt('Helplines and support', next: 'support'),
+    ],
+  ),
+  'danger': _Node(
+    "Your safety comes first.\n\n"
+    "• If you can, move to a safe, well-lit place with other people.\n"
+    "• Call 112 now.\n"
+    "• You can also use the SOS button to alert your trusted contacts "
+    "with your location.",
+    [
+      _Opt('Call 112', tel: '112'),
+      _Opt('Start SOS alert', sos: true),
+      _Opt('Back to start', next: 'start'),
+    ],
+  ),
+  'cyber': _Node(
+    "I'm sorry you're going through this. It is not your fault. Here is "
+    "what you can do:\n\n"
+    "1. Do not delete anything yet. Save evidence first.\n"
+    "2. Avoid replying to or arguing with the person.\n"
+    "3. After saving evidence, block the person and report the account "
+    "on the platform.\n"
+    "4. Report at the National Cyber Crime Reporting Portal "
+    "(cybercrime.gov.in). Choose the Women/Child Related Crime category. "
+    "Reports in that category can be made anonymously.\n"
+    "5. If money was taken, call 1930 right away.",
+    [
+      _Opt('Open the cyber crime portal', url: _cyberPortal),
+      _Opt('Call 1930', tel: '1930'),
+      _Opt('How to keep evidence safe', next: 'evidence'),
+      _Opt('Back to start', next: 'start'),
+    ],
+  ),
+  'complaint': _Node(
+    "You can file a complaint in more than one way. Which would you like "
+    "to know about?",
+    [
+      _Opt('At a police station (FIR)', next: 'fir'),
+      _Opt('Zero FIR (any police station)', next: 'zero'),
+      _Opt('Online', next: 'online'),
+      _Opt('The police refused my complaint', next: 'refused'),
+      _Opt('Back to start', next: 'start'),
+    ],
+  ),
+  'fir': _Node(
+    "To file an FIR at a police station:\n\n"
+    "1. Go to the station and tell the officer what happened. For a "
+    "serious (cognizable) offence, police are expected to register an "
+    "FIR.\n"
+    "2. Take someone you trust with you if you can.\n"
+    "3. Read what is written down and sign only when you are satisfied "
+    "it is correct.\n"
+    "4. Ask for a free copy of the FIR. This is your right.\n"
+    "5. Note the FIR number, the date, and the police station.",
+    [
+      _Opt('Zero FIR', next: 'zero'),
+      _Opt('The police refused', next: 'refused'),
+      _Opt('Back to start', next: 'start'),
+    ],
+  ),
+  'zero': _Node(
+    "A Zero FIR can be filed at any police station, no matter where the "
+    "incident happened, for serious (cognizable) offences. That station "
+    "records it and then transfers it to the right police station.\n\n"
+    "Ask for a free copy and note the number.",
+    [
+      _Opt('The police refused', next: 'refused'),
+      _Opt('Back to start', next: 'start'),
+    ],
+  ),
+  'online': _Node(
+    "• Cyber crimes: use cybercrime.gov.in. Women/Child Related Crime "
+    "reports can be anonymous.\n"
+    "• Some states also allow an e-FIR through the state police website. "
+    "An e-FIR must be signed within 3 days for it to be valid.\n"
+    "• Filing on the cyber crime portal and calling 1930 is free. Anyone "
+    "who asks you for money to file a complaint may be a scammer.",
+    [
+      _Opt('Open the cyber crime portal', url: _cyberPortal),
+      _Opt('Back to start', next: 'start'),
+    ],
+  ),
+  'refused': _Node(
+    "Police generally cannot refuse to register an FIR for a serious "
+    "(cognizable) offence. If they refuse:\n\n"
+    "1. Send the substance of your complaint in writing to the "
+    "Superintendent of Police (SP). The law for this is Section 173(4) "
+    "of the BNSS.\n"
+    "2. You can also approach a Magistrate.\n"
+    "3. Keep a copy of everything you send, and note the date.\n\n"
+    "A lawyer can help you with the next step.",
+    [
+      _Opt('Helplines and support', next: 'support'),
+      _Opt('Back to start', next: 'start'),
+    ],
+  ),
+  'evidence': _Node(
+    "Evidence can matter later, so keep it safe:\n\n"
+    "• Take screenshots that show the date, time, username, and the full "
+    "conversation. Do not crop them.\n"
+    "• Save profile links, usernames, phone numbers, and email "
+    "addresses.\n"
+    "• Keep original messages, voice notes, photos, and call logs. Do "
+    "not edit or delete them.\n"
+    "• Back up copies somewhere safe, such as another device.\n"
+    "• Write down what happened, with dates and times, while you "
+    "remember it.\n"
+    "• If you were physically hurt, get medical care first. A doctor's "
+    "record can also document injuries.",
+    [
+      _Opt('Report online', next: 'online'),
+      _Opt('Back to start', next: 'start'),
+    ],
+  ),
+  'support': _Node(
+    "You are not alone. These services can help (India):\n\n"
+    "• 112: emergency\n"
+    "• 181: Women Helpline\n"
+    "• 1091: Women in Distress (works in some states)\n"
+    "• 1930: Cyber Crime Helpline\n"
+    "• 1098: Child Helpline\n\n"
+    "The National Commission for Women also accepts complaints from "
+    "women.",
+    [
+      _Opt('Call 112', tel: '112'),
+      _Opt('Call 181', tel: '181'),
+      _Opt('Call 1930', tel: '1930'),
+      _Opt('Back to start', next: 'start'),
+    ],
+  ),
+};
+
+class SafetyAssistantScreen extends StatefulWidget {
+  const SafetyAssistantScreen({super.key});
+
+  @override
+  State<SafetyAssistantScreen> createState() => _SafetyAssistantScreenState();
+}
+
+class _SafetyAssistantScreenState extends State<SafetyAssistantScreen> {
+  final ScrollController _scroll = ScrollController();
+  final List<_Msg> _messages = [];
+  late _Node _current;
+
+  @override
+  void initState() {
+    super.initState();
+    _current = _assistantNodes['start']!;
+    _messages.add(_Msg(_current.text, false));
+  }
+
+  @override
+  void dispose() {
+    _scroll.dispose();
+    super.dispose();
+  }
+
+  void _scrollToEnd() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (_scroll.hasClients) {
+        _scroll.animateTo(
+          _scroll.position.maxScrollExtent,
+          duration: const Duration(milliseconds: 250),
+          curve: Curves.easeOut,
+        );
+      }
+    });
+  }
+
+  void _showMessage(String message) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(message)),
+    );
+  }
+
+  Future<void> _startSos() async {
+    final contacts = await ContactStorage.load();
+    if (!mounted) return;
+    if (contacts.isEmpty) {
+      _showMessage('Add at least one trusted contact first');
+      return;
+    }
+    Navigator.push(
+      context,
+      MaterialPageRoute(builder: (_) => SosScreen(contacts: contacts)),
+    );
+  }
+
+  Future<void> _choose(_Opt opt) async {
+    setState(() => _messages.add(_Msg(opt.label, true)));
+    _scrollToEnd();
+
+    final next = opt.next;
+    if (next != null) {
+      final node = _assistantNodes[next]!;
+      setState(() {
+        _current = node;
+        _messages.add(_Msg(node.text, false));
+      });
+      _scrollToEnd();
+    } else if (opt.tel != null) {
+      final ok = await openCall(opt.tel!);
+      if (!ok && mounted) _showMessage('Could not open the dialer here');
+    } else if (opt.url != null) {
+      final ok = await launchUrl(
+        Uri.parse(opt.url!),
+        mode: LaunchMode.externalApplication,
+      );
+      if (!ok && mounted) _showMessage('Could not open the link here');
+    } else if (opt.sos) {
+      await _startSos();
+    }
+  }
+
+  Widget _bubble(_Msg m) {
+    final maxWidth = MediaQuery.of(context).size.width * 0.82;
+    return Align(
+      alignment: m.fromUser ? Alignment.centerRight : Alignment.centerLeft,
+      child: Container(
+        constraints: BoxConstraints(maxWidth: maxWidth),
+        margin: const EdgeInsets.symmetric(vertical: 4),
+        padding: const EdgeInsets.all(12),
+        decoration: BoxDecoration(
+          color: m.fromUser ? kDarkPink : Colors.white,
+          borderRadius: BorderRadius.circular(16),
+        ),
+        child: Text(
+          m.text,
+          style: TextStyle(
+            color: m.fromUser ? Colors.white : Colors.black87,
+            fontSize: 15,
+            height: 1.35,
+          ),
+        ),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('Safety Assistant')),
+      body: Column(
+        children: [
+          Expanded(
+            child: ListView.builder(
+              controller: _scroll,
+              padding: const EdgeInsets.all(16),
+              itemCount: _messages.length,
+              itemBuilder: (context, i) => _bubble(_messages[i]),
+            ),
+          ),
+          SafeArea(
+            top: false,
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(12, 4, 12, 12),
+              child: Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: _current.options
+                    .map(
+                      (o) => ActionChip(
+                        label: Text(o.label),
+                        onPressed: () => _choose(o),
+                      ),
+                    )
+                    .toList(),
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }
