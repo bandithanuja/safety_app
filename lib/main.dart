@@ -9,11 +9,43 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 // ---------------------------------------------------------------
-// COLOURS: change these three to restyle the whole app
+// THEMES: colours come from the theme chosen in Settings
 // ---------------------------------------------------------------
-const Color kDarkPink = Color(0xFFC2185B); // main dark pink
-const Color kLightPink = Color(0xFFFCE4EC); // pink background
-const Color kGlowPink = Color(0xFFF48FB1); // glow around the SOS button
+class AppTheme {
+  final String name;
+  final Color primary; // strong colour (SOS button, icons)
+  final Color background; // soft background colour
+  final Color glow; // glow around the SOS button
+  const AppTheme(this.name, this.primary, this.background, this.glow);
+}
+
+const List<AppTheme> kThemes = [
+  AppTheme(
+    'Rose pink',
+    Color(0xFFC2185B),
+    Color(0xFFFCE4EC),
+    Color(0xFFF48FB1),
+  ),
+  AppTheme(
+    'Lavender',
+    Color(0xFF7B1FA2),
+    Color(0xFFF3E5F5),
+    Color(0xFFCE93D8),
+  ),
+  AppTheme(
+    'Teal',
+    Color(0xFF00796B),
+    Color(0xFFE0F2F1),
+    Color(0xFF80CBC4),
+  ),
+];
+
+// The theme currently in use (changing it rebuilds the whole app).
+final ValueNotifier<int> themeIndex = ValueNotifier<int>(0);
+
+Color get kDarkPink => kThemes[themeIndex.value].primary;
+Color get kLightPink => kThemes[themeIndex.value].background;
+Color get kGlowPink => kThemes[themeIndex.value].glow;
 
 // One shared audio player for the fake call ringtone.
 // It is "unlocked" by a silent sound when you tap Start, because
@@ -45,7 +77,14 @@ Future<bool> openMapsSearch(String query) {
   return launchUrl(uri, mode: LaunchMode.externalApplication);
 }
 
-void main() => runApp(const SafetyApp());
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  final prefs = await SharedPreferences.getInstance();
+  final saved = prefs.getInt('theme_index') ?? 0;
+  themeIndex.value = (saved >= 0 && saved < kThemes.length) ? saved : 0;
+  final seenWelcome = prefs.getBool('seen_welcome') ?? false;
+  runApp(SafetyApp(showWelcome: !seenWelcome));
+}
 
 // ---------------------------------------------------------------
 // SETTINGS: change this to your country's emergency number
@@ -296,24 +335,41 @@ class JourneyTimer {
 // APP
 // ---------------------------------------------------------------
 class SafetyApp extends StatelessWidget {
-  const SafetyApp({super.key});
+  final bool showWelcome;
+  const SafetyApp({super.key, this.showWelcome = false});
 
   @override
   Widget build(BuildContext context) {
-    return MaterialApp(
-      title: 'Safety App',
-      navigatorKey: navigatorKey,
-      debugShowCheckedModeBanner: false,
-      theme: ThemeData(
-        colorSchemeSeed: kDarkPink,
-        useMaterial3: true,
-        scaffoldBackgroundColor: kLightPink,
-        appBarTheme: const AppBarTheme(
-          backgroundColor: kLightPink,
-          surfaceTintColor: Colors.transparent,
-        ),
-      ),
-      home: const HomeScreen(),
+    return ValueListenableBuilder<int>(
+      valueListenable: themeIndex,
+      builder: (context, value, child) {
+        final t = kThemes[value];
+        return MaterialApp(
+          title: 'Saheli Safe',
+          navigatorKey: navigatorKey,
+          debugShowCheckedModeBanner: false,
+          theme: ThemeData(
+            colorSchemeSeed: t.primary,
+            useMaterial3: true,
+            scaffoldBackgroundColor: t.background,
+            appBarTheme: AppBarTheme(
+              backgroundColor: t.background,
+              surfaceTintColor: Colors.transparent,
+            ),
+            pageTransitionsTheme: const PageTransitionsTheme(
+              builders: {
+                TargetPlatform.android: FadeUpwardsPageTransitionsBuilder(),
+                TargetPlatform.iOS: FadeUpwardsPageTransitionsBuilder(),
+                TargetPlatform.macOS: FadeUpwardsPageTransitionsBuilder(),
+                TargetPlatform.windows: FadeUpwardsPageTransitionsBuilder(),
+                TargetPlatform.linux: FadeUpwardsPageTransitionsBuilder(),
+                TargetPlatform.fuchsia: FadeUpwardsPageTransitionsBuilder(),
+              },
+            ),
+          ),
+          home: showWelcome ? const WelcomeScreen() : const HomeScreen(),
+        );
+      },
     );
   }
 }
@@ -472,184 +528,281 @@ class HomeScreen extends StatelessWidget {
     );
   }
 
-  Widget _tile(IconData icon, String label, VoidCallback onTap) {
-    return SizedBox(
-      width: 150,
-      height: 48,
-      child: FilledButton.tonalIcon(
-        onPressed: onTap,
-        icon: Icon(icon, size: 20),
-        label: Text(label),
+  Widget _card(
+    BuildContext context,
+    IconData icon,
+    String label,
+    VoidCallback onTap,
+  ) {
+    return Material(
+      color: Colors.white,
+      elevation: 1,
+      borderRadius: BorderRadius.circular(16),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(16),
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 4),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              CircleAvatar(
+                radius: 22,
+                backgroundColor: kLightPink,
+                child: Icon(icon, color: kDarkPink),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                label,
+                textAlign: TextAlign.center,
+                style: const TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }
 
   @override
   Widget build(BuildContext context) {
+    void go(Widget screen) {
+      Navigator.push(context, MaterialPageRoute(builder: (_) => screen));
+    }
+
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Safety App'),
+        title: const Text('Saheli Safe'),
         actions: [
           IconButton(
-            tooltip: 'Message settings',
+            tooltip: 'Settings',
             icon: const Icon(Icons.settings),
-            onPressed: () => Navigator.push(
-              context,
-              MaterialPageRoute(builder: (_) => const SettingsScreen()),
-            ),
+            onPressed: () => go(const SettingsScreen()),
           ),
           IconButton(
             tooltip: 'Trusted contacts',
             icon: const Icon(Icons.people),
-            onPressed: () => Navigator.push(
-              context,
-              MaterialPageRoute(builder: (_) => const ContactsScreen()),
-            ),
+            onPressed: () => go(const ContactsScreen()),
           ),
         ],
       ),
-      body: Center(
-        child: SingleChildScrollView(
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              ValueListenableBuilder<int?>(
-                valueListenable: JourneyTimer.secondsLeft,
-                builder: (context, left, _) {
-                  if (left == null) return const SizedBox.shrink();
-                  return Padding(
-                    padding: const EdgeInsets.only(bottom: 20),
-                    child: ActionChip(
-                      avatar: const Icon(Icons.timer, size: 18),
-                      label: Text(
-                        'Arrival check active: ${formatDuration(left)} left',
-                      ),
-                      onPressed: () => Navigator.push(
-                        context,
-                        MaterialPageRoute(
-                          builder: (_) => const JourneyScreen(),
+      body: Container(
+        decoration: BoxDecoration(
+          gradient: LinearGradient(
+            begin: Alignment.topCenter,
+            end: Alignment.bottomCenter,
+            colors: [kLightPink, Colors.white],
+          ),
+        ),
+        child: Center(
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 480),
+            child: SingleChildScrollView(
+              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+              child: Column(
+                children: [
+                  ValueListenableBuilder<int?>(
+                    valueListenable: JourneyTimer.secondsLeft,
+                    builder: (context, left, _) {
+                      if (left == null) return const SizedBox.shrink();
+                      return Padding(
+                        padding: const EdgeInsets.only(bottom: 12),
+                        child: ActionChip(
+                          avatar: const Icon(Icons.timer, size: 18),
+                          label: Text(
+                            'Arrival check active: ${formatDuration(left)} left',
+                          ),
+                          onPressed: () => go(const JourneyScreen()),
+                        ),
+                      );
+                    },
+                  ),
+                  const Text(
+                    'In danger? Press SOS',
+                    style: TextStyle(fontSize: 20, fontWeight: FontWeight.w600),
+                  ),
+                  const SizedBox(height: 4),
+                  PulsingSosButton(onTap: () => _startSos(context)),
+                  const SizedBox(height: 4),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: SizedBox(
+                          height: 52,
+                          child: FilledButton.icon(
+                            onPressed: () => _callEmergency(context),
+                            icon: const Icon(Icons.call),
+                            label: const Text('Call Emergency'),
+                          ),
                         ),
                       ),
-                    ),
-                  );
-                },
-              ),
-              const Text(
-                'In danger? Press SOS',
-                style: TextStyle(fontSize: 20, fontWeight: FontWeight.w500),
-              ),
-              const SizedBox(height: 28),
-              GestureDetector(
-                onTap: () => _startSos(context),
-                child: Container(
-                  width: 220,
-                  height: 220,
-                  alignment: Alignment.center,
-                  decoration: BoxDecoration(
-                    color: kDarkPink,
-                    shape: BoxShape.circle,
-                    boxShadow: [
-                      BoxShadow(
-                        color: kGlowPink,
-                        blurRadius: 30,
-                        spreadRadius: 8,
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: SizedBox(
+                          height: 52,
+                          child: OutlinedButton.icon(
+                            onPressed: () => _startFakeCall(context),
+                            icon: const Icon(Icons.phone_in_talk),
+                            label: const Text('Fake Call'),
+                          ),
+                        ),
                       ),
                     ],
                   ),
-                  child: const Text(
-                    'SOS',
-                    style: TextStyle(
-                      color: Colors.white,
-                      fontSize: 56,
-                      fontWeight: FontWeight.bold,
-                    ),
-                  ),
-                ),
-              ),
-              const SizedBox(height: 40),
-              SizedBox(
-                width: 240,
-                height: 52,
-                child: FilledButton.icon(
-                  onPressed: () => _callEmergency(context),
-                  icon: const Icon(Icons.call),
-                  label: const Text('Call Emergency'),
-                ),
-              ),
-              const SizedBox(height: 12),
-              SizedBox(
-                width: 240,
-                height: 52,
-                child: OutlinedButton.icon(
-                  onPressed: () => _startFakeCall(context),
-                  icon: const Icon(Icons.phone_in_talk),
-                  label: const Text('Fake Call'),
-                ),
-              ),
-              const SizedBox(height: 20),
-              Wrap(
-                spacing: 12,
-                runSpacing: 12,
-                alignment: WrapAlignment.center,
-                children: [
-                  _tile(
-                    Icons.local_police,
-                    'Nearby Help',
-                    () => Navigator.push(
-                      context,
-                      MaterialPageRoute(
-                        builder: (_) => const NearbyHelpScreen(),
+                  const SizedBox(height: 20),
+                  GridView.count(
+                    crossAxisCount: 3,
+                    shrinkWrap: true,
+                    physics: const NeverScrollableScrollPhysics(),
+                    mainAxisSpacing: 12,
+                    crossAxisSpacing: 12,
+                    childAspectRatio: 0.95,
+                    children: [
+                      _card(
+                        context,
+                        Icons.local_police,
+                        'Nearby Help',
+                        () => go(const NearbyHelpScreen()),
                       ),
-                    ),
-                  ),
-                  _tile(
-                    Icons.timer,
-                    'Arrival Check',
-                    () => Navigator.push(
-                      context,
-                      MaterialPageRoute(builder: (_) => const JourneyScreen()),
-                    ),
-                  ),
-                  _tile(
-                    Icons.support_agent,
-                    'Helplines',
-                    () => Navigator.push(
-                      context,
-                      MaterialPageRoute(
-                        builder: (_) => const HelplinesScreen(),
+                      _card(
+                        context,
+                        Icons.timer,
+                        'Arrival Check',
+                        () => go(const JourneyScreen()),
                       ),
-                    ),
-                  ),
-                  _tile(
-                    Icons.chat_bubble,
-                    'Assistant',
-                    () => Navigator.push(
-                      context,
-                      MaterialPageRoute(
-                        builder: (_) => const SafetyAssistantScreen(),
+                      _card(
+                        context,
+                        Icons.support_agent,
+                        'Helplines',
+                        () => go(const HelplinesScreen()),
                       ),
-                    ),
+                      _card(
+                        context,
+                        Icons.chat_bubble,
+                        'Assistant',
+                        () => go(const SafetyAssistantScreen()),
+                      ),
+                      _card(
+                        context,
+                        Icons.verified_user,
+                        "I'm Safe",
+                        () => _openImSafe(context),
+                      ),
+                      _card(
+                        context,
+                        Icons.people,
+                        'Contacts',
+                        () => go(const ContactsScreen()),
+                      ),
+                    ],
                   ),
-                  _tile(
-                    Icons.verified_user,
-                    "I'm Safe",
-                    () => _openImSafe(context),
+                  const SizedBox(height: 20),
+                  const Padding(
+                    padding: EdgeInsets.symmetric(horizontal: 12),
+                    child: Text(
+                      'This app supports, but does not replace, calling '
+                      'emergency services.',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(fontSize: 12, color: Colors.grey),
+                    ),
                   ),
                 ],
               ),
-              const SizedBox(height: 28),
-              const Padding(
-                padding: EdgeInsets.symmetric(horizontal: 32),
-                child: Text(
-                  'This app supports, but does not replace, calling '
-                  'emergency services.',
-                  textAlign: TextAlign.center,
-                  style: TextStyle(fontSize: 12, color: Colors.grey),
-                ),
-              ),
-              const SizedBox(height: 16),
-            ],
+            ),
           ),
+        ),
+      ),
+    );
+  }
+}
+
+// ---------------------------------------------------------------
+// PULSING SOS BUTTON: the main button, with a gentle animated ring
+// ---------------------------------------------------------------
+class PulsingSosButton extends StatefulWidget {
+  final VoidCallback onTap;
+  const PulsingSosButton({super.key, required this.onTap});
+
+  @override
+  State<PulsingSosButton> createState() => _PulsingSosButtonState();
+}
+
+class _PulsingSosButtonState extends State<PulsingSosButton>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 1600),
+    )..repeat(reverse: true);
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Semantics(
+      button: true,
+      label: 'SOS emergency button',
+      child: GestureDetector(
+        onTap: widget.onTap,
+        child: AnimatedBuilder(
+          animation: _controller,
+          builder: (context, child) {
+            final t = Curves.easeInOut.transform(_controller.value);
+            return SizedBox(
+              width: 260,
+              height: 260,
+              child: Stack(
+                alignment: Alignment.center,
+                children: [
+                  Container(
+                    width: 200 + 60 * t,
+                    height: 200 + 60 * t,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      color: kGlowPink.withAlpha((110 * (1 - t)).round()),
+                    ),
+                  ),
+                  Container(
+                    width: 200 + 8 * t,
+                    height: 200 + 8 * t,
+                    alignment: Alignment.center,
+                    decoration: BoxDecoration(
+                      color: kDarkPink,
+                      shape: BoxShape.circle,
+                      boxShadow: [
+                        BoxShadow(
+                          color: kGlowPink,
+                          blurRadius: 24,
+                          spreadRadius: 4,
+                        ),
+                      ],
+                    ),
+                    child: const Text(
+                      'SOS',
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 52,
+                        fontWeight: FontWeight.bold,
+                        letterSpacing: 2,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            );
+          },
         ),
       ),
     );
@@ -936,12 +1089,36 @@ class _SosScreenState extends State<SosScreen> {
           children: [
             const Text('Sending alert in', style: TextStyle(fontSize: 22)),
             const SizedBox(height: 16),
-            Text(
-              '$_secondsLeft',
-              style: const TextStyle(
-                fontSize: 96,
-                fontWeight: FontWeight.bold,
-                color: kDarkPink,
+            SizedBox(
+              width: 200,
+              height: 200,
+              child: Stack(
+                alignment: Alignment.center,
+                children: [
+                  SizedBox(
+                    width: 200,
+                    height: 200,
+                    child: TweenAnimationBuilder<double>(
+                      tween: Tween<double>(end: _secondsLeft / 5.0),
+                      duration: const Duration(milliseconds: 900),
+                      builder: (context, value, _) =>
+                          CircularProgressIndicator(
+                        value: value,
+                        strokeWidth: 12,
+                        color: kDarkPink,
+                        backgroundColor: kGlowPink.withAlpha(90),
+                      ),
+                    ),
+                  ),
+                  Text(
+                    '$_secondsLeft',
+                    style: TextStyle(
+                      fontSize: 80,
+                      fontWeight: FontWeight.bold,
+                      color: kDarkPink,
+                    ),
+                  ),
+                ],
               ),
             ),
             const SizedBox(height: 32),
@@ -1040,7 +1217,7 @@ class _SosScreenState extends State<SosScreen> {
         return Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            const Icon(Icons.error_outline, color: kDarkPink, size: 72),
+            Icon(Icons.error_outline, color: kDarkPink, size: 72),
             const SizedBox(height: 12),
             Text(_error, textAlign: TextAlign.center),
             const SizedBox(height: 24),
@@ -1149,7 +1326,7 @@ class HelplinesScreen extends StatelessWidget {
           ..._helplines.map(
             (h) => Card(
               child: ListTile(
-                leading: const Icon(Icons.support_agent, color: kDarkPink),
+                leading: Icon(Icons.support_agent, color: kDarkPink),
                 title: Text('${h.$1}  ${h.$2}'),
                 subtitle: Text(h.$3),
                 trailing: const Icon(Icons.call),
@@ -1208,6 +1385,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
     });
   }
 
+  Future<void> _setTheme(int i) async {
+    themeIndex.value = i;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setInt('theme_index', i);
+  }
+
   Future<void> _save() async {
     final alert = _alertController.text.trim();
     final safe = _safeController.text.trim();
@@ -1225,12 +1408,58 @@ class _SettingsScreenState extends State<SettingsScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Message Settings')),
+      appBar: AppBar(title: const Text('Settings')),
       body: _loading
           ? const Center(child: CircularProgressIndicator())
           : ListView(
               padding: const EdgeInsets.all(16),
               children: [
+                const Text(
+                  'Theme',
+                  style: TextStyle(fontWeight: FontWeight.w600),
+                ),
+                const SizedBox(height: 8),
+                ValueListenableBuilder<int>(
+                  valueListenable: themeIndex,
+                  builder: (context, selected, _) => Wrap(
+                    spacing: 20,
+                    children: [
+                      for (int i = 0; i < kThemes.length; i++)
+                        GestureDetector(
+                          onTap: () => _setTheme(i),
+                          child: Column(
+                            children: [
+                              CircleAvatar(
+                                radius: 26,
+                                backgroundColor: kThemes[i].primary,
+                                child: selected == i
+                                    ? const Icon(Icons.check,
+                                        color: Colors.white)
+                                    : null,
+                              ),
+                              const SizedBox(height: 4),
+                              Text(
+                                kThemes[i].name,
+                                style: const TextStyle(fontSize: 12),
+                              ),
+                            ],
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 12),
+                OutlinedButton.icon(
+                  onPressed: () => Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (_) => const WelcomeScreen(fromSettings: true),
+                    ),
+                  ),
+                  icon: const Icon(Icons.slideshow),
+                  label: const Text('Show welcome screens again'),
+                ),
+                const SizedBox(height: 24),
                 const Text(
                   'SOS message',
                   style: TextStyle(fontWeight: FontWeight.w600),
@@ -1528,7 +1757,7 @@ class _JourneyScreenState extends State<JourneyScreen> {
             const SizedBox(height: 12),
             Text(
               formatDuration(left),
-              style: const TextStyle(
+              style: TextStyle(
                 fontSize: 64,
                 fontWeight: FontWeight.bold,
                 color: kDarkPink,
@@ -1595,7 +1824,7 @@ class ArrivalCheckScreen extends StatelessWidget {
                 child: Column(
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: [
-                    const Icon(
+                    Icon(
                       Icons.notifications_active,
                       size: 72,
                       color: kDarkPink,
@@ -1966,6 +2195,194 @@ class _SafetyAssistantScreenState extends State<SafetyAssistantScreen> {
 }
 
 // ---------------------------------------------------------------
+// WELCOME SCREENS: short first-time introduction
+// ---------------------------------------------------------------
+class WelcomeScreen extends StatefulWidget {
+  final bool fromSettings;
+  const WelcomeScreen({super.key, this.fromSettings = false});
+
+  @override
+  State<WelcomeScreen> createState() => _WelcomeScreenState();
+}
+
+class _WelcomeScreenState extends State<WelcomeScreen> {
+  final PageController _controller = PageController();
+  int _page = 0;
+
+  static const _slides = [
+    (
+      Icons.shield,
+      'Help in one tap',
+      'Press the SOS button. After a 5-second countdown you can cancel, '
+          'the app finds your location and prepares an alert for your '
+          'trusted contacts.',
+    ),
+    (
+      Icons.people,
+      'Your trusted contacts',
+      'Save up to 5 people. They are stored only on your device. There is '
+          'no account and no login.',
+    ),
+    (
+      Icons.favorite,
+      'More ways to stay safe',
+      'Use a fake call to leave a situation, set an arrival check, get '
+          'guided help from the assistant, and find nearby help and '
+          'helplines.',
+    ),
+    (
+      Icons.lock,
+      'Your privacy comes first',
+      'Your location is used only when you press SOS. Saheli Safe supports '
+          'your safety but does not replace emergency services. In an '
+          'emergency, call 112.',
+    ),
+  ];
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  Future<void> _finish() async {
+    if (!widget.fromSettings) {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setBool('seen_welcome', true);
+    }
+    if (!mounted) return;
+    if (widget.fromSettings) {
+      Navigator.pop(context);
+    } else {
+      Navigator.pushReplacement(
+        context,
+        MaterialPageRoute(builder: (_) => const HomeScreen()),
+      );
+    }
+  }
+
+  void _next() {
+    if (_page == _slides.length - 1) {
+      _finish();
+    } else {
+      _controller.nextPage(
+        duration: const Duration(milliseconds: 300),
+        curve: Curves.easeOut,
+      );
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final last = _page == _slides.length - 1;
+    return Scaffold(
+      body: Container(
+        decoration: BoxDecoration(
+          gradient: LinearGradient(
+            begin: Alignment.topCenter,
+            end: Alignment.bottomCenter,
+            colors: [kLightPink, Colors.white],
+          ),
+        ),
+        child: SafeArea(
+          child: Column(
+            children: [
+              Align(
+                alignment: Alignment.centerRight,
+                child: TextButton(
+                  onPressed: last ? null : _finish,
+                  child: Text(last ? '' : 'Skip'),
+                ),
+              ),
+              Expanded(
+                child: PageView.builder(
+                  controller: _controller,
+                  itemCount: _slides.length,
+                  onPageChanged: (i) => setState(() => _page = i),
+                  itemBuilder: (context, i) {
+                    final slide = _slides[i];
+                    return Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 32),
+                      child: Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Container(
+                            width: 128,
+                            height: 128,
+                            decoration: BoxDecoration(
+                              color: kDarkPink,
+                              shape: BoxShape.circle,
+                              boxShadow: [
+                                BoxShadow(
+                                  color: kGlowPink,
+                                  blurRadius: 24,
+                                  spreadRadius: 4,
+                                ),
+                              ],
+                            ),
+                            child: Icon(
+                              slide.$1,
+                              color: Colors.white,
+                              size: 64,
+                            ),
+                          ),
+                          const SizedBox(height: 32),
+                          Text(
+                            slide.$2,
+                            textAlign: TextAlign.center,
+                            style: const TextStyle(
+                              fontSize: 26,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                          const SizedBox(height: 16),
+                          Text(
+                            slide.$3,
+                            textAlign: TextAlign.center,
+                            style: const TextStyle(fontSize: 16, height: 1.4),
+                          ),
+                        ],
+                      ),
+                    );
+                  },
+                ),
+              ),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  for (int i = 0; i < _slides.length; i++)
+                    AnimatedContainer(
+                      duration: const Duration(milliseconds: 250),
+                      margin: const EdgeInsets.symmetric(horizontal: 4),
+                      width: i == _page ? 24 : 8,
+                      height: 8,
+                      decoration: BoxDecoration(
+                        color: i == _page ? kDarkPink : kGlowPink,
+                        borderRadius: BorderRadius.circular(4),
+                      ),
+                    ),
+                ],
+              ),
+              Padding(
+                padding: const EdgeInsets.all(24),
+                child: SizedBox(
+                  width: double.infinity,
+                  height: 52,
+                  child: FilledButton(
+                    onPressed: _next,
+                    child: Text(last ? 'Get started' : 'Next'),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+// ---------------------------------------------------------------
 // CONTACTS SCREEN: add, view, delete trusted contacts
 // ---------------------------------------------------------------
 class ContactsScreen extends StatefulWidget {
@@ -2092,7 +2509,7 @@ class _ContactsScreenState extends State<ContactsScreen> {
                       title: Text(c.name),
                       subtitle: Text(c.phone),
                       trailing: IconButton(
-                        icon: const Icon(Icons.delete, color: kDarkPink),
+                        icon: Icon(Icons.delete, color: kDarkPink),
                         onPressed: () => _deleteContact(index),
                       ),
                     );
