@@ -16,7 +16,18 @@ class AppTheme {
   final Color primary; // strong colour (SOS button, icons)
   final Color background; // soft background colour
   final Color glow; // glow around the SOS button
-  const AppTheme(this.name, this.primary, this.background, this.glow);
+  final bool dark;
+  final Color surface; // cards and bubbles
+  final Color onSurface; // text on cards and bubbles
+  const AppTheme(
+    this.name,
+    this.primary,
+    this.background,
+    this.glow, {
+    this.dark = false,
+    this.surface = Colors.white,
+    this.onSurface = const Color(0xDD000000),
+  });
 }
 
 const List<AppTheme> kThemes = [
@@ -38,6 +49,15 @@ const List<AppTheme> kThemes = [
     Color(0xFFE0F2F1),
     Color(0xFF80CBC4),
   ),
+  AppTheme(
+    'Dark',
+    Color(0xFFEC407A),
+    Color(0xFF16111C),
+    Color(0xFFAD1457),
+    dark: true,
+    surface: Color(0xFF241B2E),
+    onSurface: Color(0xDDFFFFFF),
+  ),
 ];
 
 // The theme currently in use (changing it rebuilds the whole app).
@@ -46,6 +66,10 @@ final ValueNotifier<int> themeIndex = ValueNotifier<int>(0);
 Color get kDarkPink => kThemes[themeIndex.value].primary;
 Color get kLightPink => kThemes[themeIndex.value].background;
 Color get kGlowPink => kThemes[themeIndex.value].glow;
+Color get kSurface => kThemes[themeIndex.value].surface;
+Color get kOnSurface => kThemes[themeIndex.value].onSurface;
+Color get kGradientEnd =>
+    kThemes[themeIndex.value].dark ? const Color(0xFF0D0912) : Colors.white;
 
 // One shared audio player for the fake call ringtone.
 // It is "unlocked" by a silent sound when you tap Start, because
@@ -348,13 +372,26 @@ class SafetyApp extends StatelessWidget {
           title: 'Saheli Safe',
           navigatorKey: navigatorKey,
           debugShowCheckedModeBanner: false,
+          builder: (context, child) => Container(
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                begin: Alignment.topCenter,
+                end: Alignment.bottomCenter,
+                colors: [t.background, kGradientEnd],
+              ),
+            ),
+            child: child,
+          ),
           theme: ThemeData(
+            brightness: t.dark ? Brightness.dark : Brightness.light,
             colorSchemeSeed: t.primary,
             useMaterial3: true,
-            scaffoldBackgroundColor: t.background,
-            appBarTheme: AppBarTheme(
-              backgroundColor: t.background,
+            scaffoldBackgroundColor: Colors.transparent,
+            appBarTheme: const AppBarTheme(
+              backgroundColor: Colors.transparent,
               surfaceTintColor: Colors.transparent,
+              elevation: 0,
+              scrolledUnderElevation: 0,
             ),
             pageTransitionsTheme: const PageTransitionsTheme(
               builders: {
@@ -533,9 +570,12 @@ class HomeScreen extends StatelessWidget {
     IconData icon,
     String label,
     VoidCallback onTap,
+    int index,
   ) {
-    return Material(
-      color: Colors.white,
+    return FadeSlideIn(
+      delay: Duration(milliseconds: 150 + index * 80),
+      child: Material(
+      color: kSurface,
       elevation: 1,
       borderRadius: BorderRadius.circular(16),
       child: InkWell(
@@ -564,6 +604,7 @@ class HomeScreen extends StatelessWidget {
           ),
         ),
       ),
+      ),
     );
   }
 
@@ -572,6 +613,11 @@ class HomeScreen extends StatelessWidget {
     void go(Widget screen) {
       Navigator.push(context, MaterialPageRoute(builder: (_) => screen));
     }
+
+    // Each card fades in slightly after the one before it.
+    var cardIndex = 0;
+    Widget card(IconData icon, String label, VoidCallback onTap) =>
+        _card(context, icon, label, onTap, cardIndex++);
 
     return Scaffold(
       appBar: AppBar(
@@ -594,7 +640,7 @@ class HomeScreen extends StatelessWidget {
           gradient: LinearGradient(
             begin: Alignment.topCenter,
             end: Alignment.bottomCenter,
-            colors: [kLightPink, Colors.white],
+            colors: [kLightPink, kGradientEnd],
           ),
         ),
         child: Center(
@@ -661,38 +707,32 @@ class HomeScreen extends StatelessWidget {
                     crossAxisSpacing: 12,
                     childAspectRatio: 0.95,
                     children: [
-                      _card(
-                        context,
+                      card(
                         Icons.local_police,
                         'Nearby Help',
                         () => go(const NearbyHelpScreen()),
                       ),
-                      _card(
-                        context,
+                      card(
                         Icons.timer,
                         'Arrival Check',
                         () => go(const JourneyScreen()),
                       ),
-                      _card(
-                        context,
+                      card(
                         Icons.support_agent,
                         'Helplines',
                         () => go(const HelplinesScreen()),
                       ),
-                      _card(
-                        context,
+                      card(
                         Icons.chat_bubble,
                         'Assistant',
                         () => go(const SafetyAssistantScreen()),
                       ),
-                      _card(
-                        context,
+                      card(
                         Icons.verified_user,
                         "I'm Safe",
                         () => _openImSafe(context),
                       ),
-                      _card(
-                        context,
+                      card(
                         Icons.people,
                         'Contacts',
                         () => go(const ContactsScreen()),
@@ -733,6 +773,7 @@ class PulsingSosButton extends StatefulWidget {
 class _PulsingSosButtonState extends State<PulsingSosButton>
     with SingleTickerProviderStateMixin {
   late final AnimationController _controller;
+  bool _pressed = false;
 
   @override
   void initState() {
@@ -755,12 +796,20 @@ class _PulsingSosButtonState extends State<PulsingSosButton>
       button: true,
       label: 'SOS emergency button',
       child: GestureDetector(
-        onTap: widget.onTap,
+        onTapDown: (_) => setState(() => _pressed = true),
+        onTapUp: (_) => setState(() => _pressed = false),
+        onTapCancel: () => setState(() => _pressed = false),
+        onTap: () {
+          HapticFeedback.mediumImpact();
+          widget.onTap();
+        },
         child: AnimatedBuilder(
           animation: _controller,
           builder: (context, child) {
             final t = Curves.easeInOut.transform(_controller.value);
-            return SizedBox(
+            return Transform.scale(
+              scale: _pressed ? 0.94 : 1.0,
+              child: SizedBox(
               width: 260,
               height: 260,
               child: Stack(
@@ -801,7 +850,7 @@ class _PulsingSosButtonState extends State<PulsingSosButton>
                   ),
                 ],
               ),
-            );
+            ));
           },
         ),
       ),
@@ -1110,12 +1159,20 @@ class _SosScreenState extends State<SosScreen> {
                       ),
                     ),
                   ),
-                  Text(
-                    '$_secondsLeft',
-                    style: TextStyle(
-                      fontSize: 80,
-                      fontWeight: FontWeight.bold,
-                      color: kDarkPink,
+                  AnimatedSwitcher(
+                    duration: const Duration(milliseconds: 300),
+                    transitionBuilder: (child, animation) => ScaleTransition(
+                      scale: animation,
+                      child: FadeTransition(opacity: animation, child: child),
+                    ),
+                    child: Text(
+                      '$_secondsLeft',
+                      key: ValueKey<int>(_secondsLeft),
+                      style: TextStyle(
+                        fontSize: 80,
+                        fontWeight: FontWeight.bold,
+                        color: kDarkPink,
+                      ),
                     ),
                   ),
                 ],
@@ -1171,7 +1228,7 @@ class _SosScreenState extends State<SosScreen> {
                 ],
               ),
               const SizedBox(height: 8),
-              Card(
+              SoftCard(
                 child: Padding(
                   padding: const EdgeInsets.all(16),
                   child: SelectableText(_showSafe ? _safeText : _message),
@@ -1186,16 +1243,15 @@ class _SosScreenState extends State<SosScreen> {
               const SizedBox(height: 8),
               ...widget.contacts.map((c) {
                 final sent = _sent.contains(_sentKey(c));
-                return ListTile(
-                  leading: Icon(
-                    sent ? Icons.check_circle : Icons.person,
-                    color: sent ? Colors.green : null,
-                  ),
-                  title: Text(c.name),
-                  subtitle: Text(c.phone),
-                  trailing: FilledButton(
-                    onPressed: () => _sendSms(c),
-                    child: Text(sent ? 'Resend' : 'Send SMS'),
+                return SoftCard(
+                  child: ListTile(
+                    leading: _SentIcon(sent: sent),
+                    title: Text(c.name),
+                    subtitle: Text(c.phone),
+                    trailing: FilledButton(
+                      onPressed: () => _sendSms(c),
+                      child: Text(sent ? 'Resend' : 'Send SMS'),
+                    ),
                   ),
                 );
               }),
@@ -1269,7 +1325,7 @@ class NearbyHelpScreen extends StatelessWidget {
           ),
           const SizedBox(height: 12),
           ..._places.map(
-            (p) => Card(
+            (p) => SoftCard(
               child: ListTile(
                 leading: Icon(p.$3, color: kDarkPink),
                 title: Text(p.$1),
@@ -1324,7 +1380,7 @@ class HelplinesScreen extends StatelessWidget {
           ),
           const SizedBox(height: 12),
           ..._helplines.map(
-            (h) => Card(
+            (h) => SoftCard(
               child: ListTile(
                 leading: Icon(Icons.support_agent, color: kDarkPink),
                 title: Text('${h.$1}  ${h.$2}'),
@@ -1435,7 +1491,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
                                 child: selected == i
                                     ? const Icon(Icons.check,
                                         color: Colors.white)
-                                    : null,
+                                    : (kThemes[i].dark
+                                        ? const Icon(Icons.dark_mode,
+                                            color: Colors.white, size: 22)
+                                        : null),
                               ),
                               const SizedBox(height: 4),
                               Text(
@@ -1554,7 +1613,7 @@ class _SendMessageScreenState extends State<SendMessageScreen> {
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [
-          Card(
+          SoftCard(
             child: Padding(
               padding: const EdgeInsets.all(16),
               child: SelectableText(widget.message),
@@ -1569,16 +1628,15 @@ class _SendMessageScreenState extends State<SendMessageScreen> {
           const SizedBox(height: 8),
           ...widget.contacts.map((c) {
             final sent = _sent.contains(c.phone);
-            return ListTile(
-              leading: Icon(
-                sent ? Icons.check_circle : Icons.person,
-                color: sent ? Colors.green : null,
-              ),
-              title: Text(c.name),
-              subtitle: Text(c.phone),
-              trailing: FilledButton(
-                onPressed: () => _send(c),
-                child: Text(sent ? 'Resend' : 'Send SMS'),
+            return SoftCard(
+              child: ListTile(
+                leading: _SentIcon(sent: sent),
+                title: Text(c.name),
+                subtitle: Text(c.phone),
+                trailing: FilledButton(
+                  onPressed: () => _send(c),
+                  child: Text(sent ? 'Resend' : 'Send SMS'),
+                ),
               ),
             );
           }),
@@ -2061,6 +2119,7 @@ class _SafetyAssistantScreenState extends State<SafetyAssistantScreen> {
   final ScrollController _scroll = ScrollController();
   final List<_Msg> _messages = [];
   late _Node _current;
+  bool _typing = false;
 
   @override
   void initState() {
@@ -2112,8 +2171,13 @@ class _SafetyAssistantScreenState extends State<SafetyAssistantScreen> {
 
     final next = opt.next;
     if (next != null) {
+      setState(() => _typing = true);
+      _scrollToEnd();
+      await Future.delayed(const Duration(milliseconds: 700));
+      if (!mounted) return;
       final node = _assistantNodes[next]!;
       setState(() {
+        _typing = false;
         _current = node;
         _messages.add(_Msg(node.text, false));
       });
@@ -2132,26 +2196,65 @@ class _SafetyAssistantScreenState extends State<SafetyAssistantScreen> {
     }
   }
 
+  Widget _botAvatar() {
+    return CircleAvatar(
+      radius: 14,
+      backgroundColor: kDarkPink,
+      child: const Icon(Icons.shield, size: 16, color: Colors.white),
+    );
+  }
+
   Widget _bubble(_Msg m) {
-    final maxWidth = MediaQuery.of(context).size.width * 0.82;
-    return Align(
-      alignment: m.fromUser ? Alignment.centerRight : Alignment.centerLeft,
-      child: Container(
-        constraints: BoxConstraints(maxWidth: maxWidth),
-        margin: const EdgeInsets.symmetric(vertical: 4),
-        padding: const EdgeInsets.all(12),
-        decoration: BoxDecoration(
-          color: m.fromUser ? kDarkPink : Colors.white,
-          borderRadius: BorderRadius.circular(16),
+    final maxWidth = MediaQuery.of(context).size.width * 0.74;
+    final bubble = Container(
+      constraints: BoxConstraints(maxWidth: maxWidth),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: m.fromUser ? kDarkPink : kSurface,
+        borderRadius: BorderRadius.circular(16),
+      ),
+      child: Text(
+        m.text,
+        style: TextStyle(
+          color: m.fromUser ? Colors.white : kOnSurface,
+          fontSize: 15,
+          height: 1.35,
         ),
-        child: Text(
-          m.text,
-          style: TextStyle(
-            color: m.fromUser ? Colors.white : Colors.black87,
-            fontSize: 15,
-            height: 1.35,
+      ),
+    );
+    return FadeSlideIn(
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 4),
+        child: m.fromUser
+            ? Align(alignment: Alignment.centerRight, child: bubble)
+            : Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  _botAvatar(),
+                  const SizedBox(width: 8),
+                  Flexible(child: bubble),
+                ],
+              ),
+      ),
+    );
+  }
+
+  Widget _typingBubble() {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 4),
+      child: Row(
+        children: [
+          _botAvatar(),
+          const SizedBox(width: 8),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
+            decoration: BoxDecoration(
+              color: kSurface,
+              borderRadius: BorderRadius.circular(16),
+            ),
+            child: const TypingDots(),
           ),
-        ),
+        ],
       ),
     );
   }
@@ -2166,8 +2269,9 @@ class _SafetyAssistantScreenState extends State<SafetyAssistantScreen> {
             child: ListView.builder(
               controller: _scroll,
               padding: const EdgeInsets.all(16),
-              itemCount: _messages.length,
-              itemBuilder: (context, i) => _bubble(_messages[i]),
+              itemCount: _messages.length + (_typing ? 1 : 0),
+              itemBuilder: (context, i) =>
+                  i < _messages.length ? _bubble(_messages[i]) : _typingBubble(),
             ),
           ),
           SafeArea(
@@ -2181,7 +2285,7 @@ class _SafetyAssistantScreenState extends State<SafetyAssistantScreen> {
                     .map(
                       (o) => ActionChip(
                         label: Text(o.label),
-                        onPressed: () => _choose(o),
+                        onPressed: _typing ? null : () => _choose(o),
                       ),
                     )
                     .toList(),
@@ -2190,6 +2294,157 @@ class _SafetyAssistantScreenState extends State<SafetyAssistantScreen> {
           ),
         ],
       ),
+    );
+  }
+}
+
+// ---------------------------------------------------------------
+// SMALL REUSABLE WIDGETS: soft card, entrance animation, typing dots
+// ---------------------------------------------------------------
+class SoftCard extends StatelessWidget {
+  final Widget child;
+  const SoftCard({super.key, required this.child});
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 4),
+      child: Material(
+        color: kSurface,
+        elevation: 1,
+        shadowColor: kDarkPink.withAlpha(80),
+        borderRadius: BorderRadius.circular(16),
+        clipBehavior: Clip.antiAlias,
+        child: child,
+      ),
+    );
+  }
+}
+
+class FadeSlideIn extends StatefulWidget {
+  final Widget child;
+  final Duration delay;
+  const FadeSlideIn({
+    super.key,
+    required this.child,
+    this.delay = Duration.zero,
+  });
+
+  @override
+  State<FadeSlideIn> createState() => _FadeSlideInState();
+}
+
+class _FadeSlideInState extends State<FadeSlideIn>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller;
+  late final Animation<double> _fade;
+  late final Animation<Offset> _slide;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 450),
+    );
+    _fade = CurvedAnimation(parent: _controller, curve: Curves.easeOut);
+    _slide = Tween<Offset>(
+      begin: const Offset(0, 0.12),
+      end: Offset.zero,
+    ).animate(_fade);
+    Future.delayed(widget.delay, () {
+      if (mounted) _controller.forward();
+    });
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return FadeTransition(
+      opacity: _fade,
+      child: SlideTransition(position: _slide, child: widget.child),
+    );
+  }
+}
+
+class _SentIcon extends StatelessWidget {
+  final bool sent;
+  const _SentIcon({required this.sent});
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedSwitcher(
+      duration: const Duration(milliseconds: 350),
+      transitionBuilder: (child, animation) =>
+          ScaleTransition(scale: animation, child: child),
+      child: Icon(
+        sent ? Icons.check_circle : Icons.person,
+        key: ValueKey<bool>(sent),
+        color: sent ? Colors.green : null,
+        size: sent ? 30 : 24,
+      ),
+    );
+  }
+}
+
+class TypingDots extends StatefulWidget {
+  const TypingDots({super.key});
+
+  @override
+  State<TypingDots> createState() => _TypingDotsState();
+}
+
+class _TypingDotsState extends State<TypingDots>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 1000),
+    )..repeat();
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: _controller,
+      builder: (context, child) {
+        return Row(
+          mainAxisSize: MainAxisSize.min,
+          children: List.generate(3, (i) {
+            final phase = (_controller.value + i * 0.2) % 1.0;
+            final v = Curves.easeInOut.transform(
+              phase < 0.5 ? phase * 2 : (1 - phase) * 2,
+            );
+            return Transform.translate(
+              offset: Offset(0, -4 * v),
+              child: Container(
+                width: 8,
+                height: 8,
+                margin: const EdgeInsets.symmetric(horizontal: 2),
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  color: kDarkPink.withAlpha((90 + 165 * v).round()),
+                ),
+              ),
+            );
+          }),
+        );
+      },
     );
   }
 }
@@ -2281,7 +2536,7 @@ class _WelcomeScreenState extends State<WelcomeScreen> {
           gradient: LinearGradient(
             begin: Alignment.topCenter,
             end: Alignment.bottomCenter,
-            colors: [kLightPink, Colors.white],
+            colors: [kLightPink, kGradientEnd],
           ),
         ),
         child: SafeArea(
@@ -2489,28 +2744,59 @@ class _ContactsScreenState extends State<ContactsScreen> {
       body: _loading
           ? const Center(child: CircularProgressIndicator())
           : _contacts.isEmpty
-              ? const Center(
+              ? Center(
                   child: Padding(
-                    padding: EdgeInsets.all(24),
-                    child: Text(
-                      'No contacts yet.\nTap + to add someone who should get your SOS alert.',
-                      textAlign: TextAlign.center,
+                    padding: const EdgeInsets.all(32),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        CircleAvatar(
+                          radius: 48,
+                          backgroundColor: kSurface,
+                          child: Icon(
+                            Icons.group_add,
+                            size: 44,
+                            color: kDarkPink,
+                          ),
+                        ),
+                        const SizedBox(height: 20),
+                        const Text(
+                          'No trusted contacts yet',
+                          style: TextStyle(
+                            fontSize: 20,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                        const SizedBox(height: 8),
+                        const Text(
+                          'Tap + to add someone who should get your SOS alert.',
+                          textAlign: TextAlign.center,
+                        ),
+                      ],
                     ),
                   ),
                 )
               : ListView.builder(
+                  padding: const EdgeInsets.all(16),
                   itemCount: _contacts.length,
                   itemBuilder: (context, index) {
                     final c = _contacts[index];
-                    return ListTile(
-                      leading: CircleAvatar(
-                        child: Text(c.name[0].toUpperCase()),
-                      ),
-                      title: Text(c.name),
-                      subtitle: Text(c.phone),
-                      trailing: IconButton(
-                        icon: Icon(Icons.delete, color: kDarkPink),
-                        onPressed: () => _deleteContact(index),
+                    return FadeSlideIn(
+                      delay: Duration(milliseconds: 60 * index),
+                      child: SoftCard(
+                        child: ListTile(
+                          leading: CircleAvatar(
+                            backgroundColor: kDarkPink,
+                            foregroundColor: Colors.white,
+                            child: Text(c.name[0].toUpperCase()),
+                          ),
+                          title: Text(c.name),
+                          subtitle: Text(c.phone),
+                          trailing: IconButton(
+                            icon: Icon(Icons.delete, color: kDarkPink),
+                            onPressed: () => _deleteContact(index),
+                          ),
+                        ),
                       ),
                     );
                   },
