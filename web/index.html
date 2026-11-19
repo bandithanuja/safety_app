@@ -18,21 +18,28 @@
 
   <meta charset="UTF-8">
   <meta content="IE=Edge" http-equiv="X-UA-Compatible">
-  <meta name="description" content="A new Flutter project.">
+  <meta name="description" content="Saheli Safe: a one-tap women safety app">
 
   <!-- iOS meta tags & icons -->
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black">
-  <meta name="apple-mobile-web-app-title" content="safety_app">
+  <meta name="apple-mobile-web-app-title" content="Saheli Safe">
   <link rel="apple-touch-icon" href="icons/Icon-192.png">
 
   <!-- Favicon -->
   <link rel="icon" type="image/png" href="favicon.png"/>
 
-  <title>safety_app</title>
+  <title>Saheli Safe</title>
   <link rel="manifest" href="manifest.json">
+  <meta name="theme-color" content="#C2185B">
 </head>
 <body>
+<div id="splash" style="position:fixed;top:0;right:0;bottom:0;left:0;z-index:9999;display:flex;flex-direction:column;align-items:center;justify-content:center;background:linear-gradient(#FCE4EC,#ffffff);font-family:Arial,Helvetica,sans-serif;transition:opacity .4s ease;">
+  <img src="icons/Icon-192.png" width="96" height="96" alt="" style="border-radius:24px;box-shadow:0 8px 24px rgba(194,24,91,.35);">
+  <div style="margin-top:20px;font-size:26px;font-weight:700;color:#C2185B;">Saheli Safe</div>
+  <div style="margin-top:8px;font-size:14px;color:#777777;">Loading...</div>
+</div>
+
   <!--
     You can customize the "flutter_bootstrap.js" script.
     This is useful to provide a custom configuration to the Flutter loader
@@ -42,5 +49,16 @@
     * https://docs.flutter.dev/platform-integration/web/initialization
   -->
   <script src="flutter_bootstrap.js" async></script>
+
+<script>
+  function hideSplash() {
+    var s = document.getElementById('splash');
+    if (!s) return;
+    s.style.opacity = '0';
+    setTimeout(function () { if (s.parentNode) s.parentNode.removeChild(s); }, 450);
+  }
+  window.addEventListener('flutter-first-frame', hideSplash);
+  setTimeout(hideSplash, 20000);
+</script>
 </body>
 </html>

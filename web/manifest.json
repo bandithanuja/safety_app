@@ -1,11 +1,11 @@
 {
-    "name": "safety_app",
-    "short_name": "safety_app",
+    "name": "Saheli Safe",
+    "short_name": "Saheli Safe",
     "start_url": ".",
     "display": "standalone",
-    "background_color": "#0175C2",
-    "theme_color": "#0175C2",
-    "description": "A new Flutter project.",
+    "background_color": "#FCE4EC",
+    "theme_color": "#C2185B",
+    "description": "A one-tap women safety app",
     "orientation": "portrait-primary",
     "prefer_related_applications": false,
     "icons": [
